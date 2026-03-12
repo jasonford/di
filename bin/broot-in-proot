@@ -1,0 +1,115 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+workdir="${WORKDIR:-/workspace}"
+broot_config_home="${BROOT_CONFIG_HOME:-$workdir/.config}"
+broot_pane_width="${BROOT_PANE_WIDTH:-45}"
+
+if [ ! -d "$workdir" ]; then
+  printf 'isolated broot error: missing workdir %s\n' "$workdir" >&2
+  exit 1
+fi
+
+if [ ! -x /usr/bin/proot ]; then
+  printf 'isolated broot error: proot is not installed\n' >&2
+  exit 1
+fi
+
+runtime_dir="$(mktemp -d /tmp/codex-broot-proot.XXXXXX)"
+cleanup() {
+  rm -rf "$runtime_dir"
+}
+trap cleanup EXIT
+
+mkdir -p \
+  "$runtime_dir/conf" \
+  "$runtime_dir/rootfs" \
+  "$runtime_dir/workspace-bin" \
+  "$runtime_dir/xdg-config"
+
+cp "$broot_config_home/broot/conf.hjson" "$runtime_dir/conf/conf.hjson"
+cp "$broot_config_home/broot/verbs.hjson" "$runtime_dir/conf/verbs.hjson"
+
+# Load verbs explicitly via --conf to avoid broot trying to create its config
+# directory on a bind mount inside proot.
+sed -i '/^imports:/,$d' "$runtime_dir/conf/conf.hjson"
+
+cat >"$runtime_dir/workspace-bin/broot-preview" <<'EOF'
+#!/.proot/bin/bash
+set -euo pipefail
+export PATH="/.proot/bin:/opt/nvim/bin:${PATH:-}"
+exec /.proot/bin/bash /bin/broot-preview "$@"
+EOF
+
+cat >"$runtime_dir/workspace-bin/broot-open-in-tmux" <<'EOF'
+#!/.proot/bin/bash
+set -euo pipefail
+export PATH="/.proot/bin:/opt/nvim/bin:${PATH:-}"
+export BROOT_PANE_WIDTH="${BROOT_PANE_WIDTH:-45}"
+exec /.proot/bin/bash /bin/broot-open-in-tmux "$@"
+EOF
+
+chmod 755 "$runtime_dir/workspace-bin/broot-preview" "$runtime_dir/workspace-bin/broot-open-in-tmux"
+
+proot_args=(
+  /usr/bin/proot
+  -r "$runtime_dir/rootfs"
+  -w /workspace
+  -b "$workdir:/workspace"
+  -b "$runtime_dir/workspace-bin/broot-preview:/workspace/bin/broot-preview"
+  -b "$runtime_dir/workspace-bin/broot-open-in-tmux:/workspace/bin/broot-open-in-tmux"
+  -b /usr/local/bin/broot:/.proot/bin/broot
+  -b /bin/bash:/.proot/bin/bash
+  -b /bin/cat:/.proot/bin/cat
+  -b /usr/bin/dirname:/.proot/bin/dirname
+  -b /usr/bin/file:/.proot/bin/file
+  -b /usr/bin/git:/.proot/bin/git
+  -b /usr/bin/realpath:/.proot/bin/realpath
+  -b /usr/bin/tmux:/.proot/bin/tmux
+  -b /lib:/lib
+  -b /lib64:/lib64
+  -b /usr/lib:/usr/lib
+  -b /tmp:/tmp
+  -b /dev:/dev
+  -b /proc:/proc
+)
+
+nvim_bin="$(readlink -f /usr/local/bin/nvim)"
+nvim_root="$(dirname "$(dirname "$nvim_bin")")"
+proot_args+=(
+  -b "$nvim_root:/opt/nvim"
+)
+
+if [ -d /etc/alternatives ]; then
+  proot_args+=(-b /etc/alternatives:/etc/alternatives)
+fi
+
+if [ -e /etc/magic ]; then
+  proot_args+=(-b /etc/magic:/etc/magic)
+fi
+
+if [ -d /etc/terminfo ]; then
+  proot_args+=(-b /etc/terminfo:/etc/terminfo)
+fi
+
+if [ -d /lib/terminfo ]; then
+  proot_args+=(-b /lib/terminfo:/lib/terminfo)
+fi
+
+if [ -d /usr/share/misc ]; then
+  proot_args+=(-b /usr/share/misc:/usr/share/misc)
+fi
+
+if [ -d /usr/share/terminfo ]; then
+  proot_args+=(-b /usr/share/terminfo:/usr/share/terminfo)
+fi
+
+env \
+  BR_INSTALL=no \
+  XDG_CONFIG_HOME="$runtime_dir/xdg-config" \
+  BROOT_PANE_WIDTH="$broot_pane_width" \
+  PATH='/.proot/bin:/opt/nvim/bin' \
+  "${proot_args[@]}" \
+  /.proot/bin/broot \
+  --conf "$runtime_dir/conf/conf.hjson;$runtime_dir/conf/verbs.hjson" \
+  "${@:-/workspace}"

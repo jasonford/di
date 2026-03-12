@@ -25,7 +25,7 @@ broot_cmd=(
   BR_INSTALL=no
   XDG_CONFIG_HOME="$BROOT_CONFIG_HOME"
   BROOT_PANE_WIDTH="$BROOT_PANE_WIDTH"
-  broot
+  /workspace/bin/broot-in-proot
 )
 
 if ! "${tmux_cmd[@]}" has-session -t "$SESSION_NAME" 2>/dev/null; then
