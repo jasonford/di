@@ -1,0 +1,83 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+IMAGE="${IMAGE:-codex-dev}"
+CONTAINER_NAME="${CONTAINER_NAME:-codex-dev}"
+WORKDIR="${WORKDIR:-/workspace}"
+CODEX_VERSION="${CODEX_VERSION:-0.113.0}"
+MODEL="${MODEL:-gpt-5.4}"
+ALLOW_NET="${ALLOW_NET:-1}"
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+STATE_DIR="$SCRIPT_DIR/.codex-home"
+CODEX_DIR="$STATE_DIR/.codex"
+CACHE_DIR="$STATE_DIR/.cache"
+LOCAL_STATE_DIR="$STATE_DIR/.local/state"
+
+mkdir -p "$CODEX_DIR" "$CACHE_DIR" "$LOCAL_STATE_DIR"
+
+if [ -f "$SCRIPT_DIR/AGENTS.md" ]; then
+  cp "$SCRIPT_DIR/AGENTS.md" "$CODEX_DIR/AGENTS.md"
+fi
+
+NET_ARGS=(--network none)
+if [ "$ALLOW_NET" = "1" ]; then
+  NET_ARGS=(--network bridge)
+fi
+
+echo "Building image $IMAGE (Docker cache will be reused if unchanged)..."
+docker build \
+  --build-arg "CODEX_VERSION=$CODEX_VERSION" \
+  -t "$IMAGE" \
+  "$SCRIPT_DIR"
+
+if [ "${1:-}" = "login" ]; then
+  shift || true
+  exec docker run --rm -it \
+    "${NET_ARGS[@]}" \
+    --name "$CONTAINER_NAME-login" \
+    --init \
+    --mount "type=bind,src=$SCRIPT_DIR,dst=$WORKDIR" \
+    --mount "type=bind,src=$CODEX_DIR,dst=/home/dev/.codex" \
+    --mount "type=bind,src=$CACHE_DIR,dst=/home/dev/.cache" \
+    --mount "type=bind,src=$LOCAL_STATE_DIR,dst=/home/dev/.local/state" \
+    -w "$WORKDIR" \
+    -e HOME=/home/dev \
+    -e CODEX_HOME=/home/dev/.codex \
+    -e XDG_CONFIG_HOME=/opt/nvim-config \
+    -e XDG_DATA_HOME=/opt/nvim-data \
+    -e XDG_CACHE_HOME=/home/dev/.cache \
+    -e XDG_STATE_HOME=/home/dev/.local/state \
+    -e VISUAL=nvim \
+    -e EDITOR=nvim \
+    -e TERM="${TERM:-xterm-256color}" \
+    -u "$(id -u):$(id -g)" \
+    "$IMAGE" \
+    codex login --device-auth "$@"
+fi
+
+exec docker run --rm -it \
+  "${NET_ARGS[@]}" \
+  --name "$CONTAINER_NAME" \
+  --init \
+  --mount "type=bind,src=$SCRIPT_DIR,dst=$WORKDIR" \
+  --mount "type=bind,src=$CODEX_DIR,dst=/home/dev/.codex" \
+  --mount "type=bind,src=$CACHE_DIR,dst=/home/dev/.cache" \
+  --mount "type=bind,src=$LOCAL_STATE_DIR,dst=/home/dev/.local/state" \
+  -w "$WORKDIR" \
+  -e HOME=/home/dev \
+  -e CODEX_HOME=/home/dev/.codex \
+  -e XDG_CONFIG_HOME=/opt/nvim-config \
+  -e XDG_DATA_HOME=/opt/nvim-data \
+  -e XDG_CACHE_HOME=/home/dev/.cache \
+  -e XDG_STATE_HOME=/home/dev/.local/state \
+  -e VISUAL=nvim \
+  -e EDITOR=nvim \
+  -e TERM="${TERM:-xterm-256color}" \
+  -e MODEL="$MODEL" \
+  -u "$(id -u):$(id -g)" \
+  "$IMAGE" \
+  codex \
+  --model "$MODEL" \
+  --dangerously-bypass-approvals-and-sandbox \
+  "$@"
