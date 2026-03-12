@@ -1,0 +1,27 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+if [ -f "$script_dir/nvim/init.lua" ]; then
+  default_config_home="$script_dir"
+elif [ -f "/workspace/nvim/init.lua" ]; then
+  default_config_home="/workspace"
+else
+  default_config_home="${XDG_CONFIG_HOME:-/opt/nvim-config}"
+fi
+
+# Always launch Neovim with the repo's Codex-focused config so the custom
+# commands from nvim/init.lua are available, even if the caller only knows
+# about $EDITOR or passes a file path directly.
+export XDG_CONFIG_HOME="$default_config_home"
+export XDG_DATA_HOME="${XDG_DATA_HOME:-${HOME:-/tmp}/.local/share}"
+export XDG_CACHE_HOME="${XDG_CACHE_HOME:-${HOME:-/tmp}/.cache}"
+export XDG_STATE_HOME="${XDG_STATE_HOME:-${HOME:-/tmp}/.local/state}"
+
+mkdir -p \
+  "$XDG_DATA_HOME" \
+  "$XDG_CACHE_HOME" \
+  "$XDG_STATE_HOME"
+
+exec nvim "$@"

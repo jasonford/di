@@ -3,10 +3,24 @@ vim.g.mapleader = ' '
 vim.opt.number = true
 vim.opt.relativenumber = true
 vim.opt.termguicolors = true
+vim.opt.mouse = 'a'
 vim.opt.clipboard = 'unnamedplus'
+vim.opt.autoread = true
 vim.opt.updatetime = 200
 vim.opt.completeopt = 'menu,menuone,noselect'
 vim.opt.signcolumn = 'yes'
+
+local autoread_group = vim.api.nvim_create_augroup('codex_autoread', { clear = true })
+vim.api.nvim_create_autocmd({ 'FocusGained', 'TermClose', 'TermLeave', 'BufEnter', 'CursorHold', 'CursorHoldI' }, {
+  group = autoread_group,
+  command = 'checktime',
+})
+vim.api.nvim_create_autocmd('FileChangedShellPost', {
+  group = autoread_group,
+  callback = function()
+    vim.notify('File reloaded from disk', vim.log.levels.INFO)
+  end,
+})
 
 local lazypath = vim.fn.stdpath('data') .. '/lazy/lazy.nvim'
 if not vim.loop.fs_stat(lazypath) then
@@ -48,7 +62,10 @@ require('lazy').setup({
       auto_install = false,
     },
     config = function(_, opts)
-      require('nvim-treesitter.configs').setup(opts)
+      local ok, treesitter = pcall(require, 'nvim-treesitter')
+      if ok then
+        treesitter.setup(opts)
+      end
     end,
   },
   { 'neovim/nvim-lspconfig' },
@@ -90,19 +107,20 @@ require('lazy').setup({
   },
 })
 
-local lspconfig = require('lspconfig')
 local capabilities = require('cmp_nvim_lsp').default_capabilities()
-
-if vim.fn.executable('typescript-language-server') == 1 then
-  lspconfig.ts_ls.setup({
+local function enable_lsp(server)
+  vim.lsp.config(server, {
     capabilities = capabilities,
   })
+  vim.lsp.enable(server)
+end
+
+if vim.fn.executable('typescript-language-server') == 1 then
+  enable_lsp('ts_ls')
 end
 
 if vim.fn.executable('pyright') == 1 then
-  lspconfig.pyright.setup({
-    capabilities = capabilities,
-  })
+  enable_lsp('pyright')
 end
 
 local function dedupe(items)

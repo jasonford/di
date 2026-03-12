@@ -13,6 +13,7 @@ STATE_DIR="$SCRIPT_DIR/.codex-home"
 CODEX_DIR="$STATE_DIR/.codex"
 CACHE_DIR="$STATE_DIR/.cache"
 LOCAL_STATE_DIR="$STATE_DIR/.local/state"
+TMUX_SESSION_NAME="${TMUX_SESSION_NAME:-codex}"
 
 mkdir -p "$CODEX_DIR" "$CACHE_DIR" "$LOCAL_STATE_DIR"
 
@@ -48,8 +49,8 @@ if [ "${1:-}" = "login" ]; then
     -e XDG_DATA_HOME=/opt/nvim-data \
     -e XDG_CACHE_HOME=/home/dev/.cache \
     -e XDG_STATE_HOME=/home/dev/.local/state \
-    -e VISUAL=nvim \
-    -e EDITOR=nvim \
+    -e VISUAL=codex-nvim \
+    -e EDITOR=codex-nvim \
     -e TERM="${TERM:-xterm-256color}" \
     -u "$(id -u):$(id -g)" \
     "$IMAGE" \
@@ -71,13 +72,12 @@ exec docker run --rm -it \
   -e XDG_DATA_HOME=/opt/nvim-data \
   -e XDG_CACHE_HOME=/home/dev/.cache \
   -e XDG_STATE_HOME=/home/dev/.local/state \
-  -e VISUAL=nvim \
-  -e EDITOR=nvim \
+  -e VISUAL=codex-nvim \
+  -e EDITOR=codex-nvim \
   -e TERM="${TERM:-xterm-256color}" \
   -e MODEL="$MODEL" \
+  -e CODEX_TMUX_SESSION="$TMUX_SESSION_NAME" \
   -u "$(id -u):$(id -g)" \
   "$IMAGE" \
-  codex \
-  --model "$MODEL" \
-  --dangerously-bypass-approvals-and-sandbox \
+  bash /workspace/start-tmux-codex \
   "$@"
