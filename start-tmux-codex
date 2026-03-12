@@ -4,6 +4,9 @@ set -euo pipefail
 SESSION_NAME="${CODEX_TMUX_SESSION:-codex}"
 WORKDIR="${WORKDIR:-/workspace}"
 MODEL="${MODEL:-gpt-5.4}"
+TMUX_CONFIG="${TMUX_CONFIG:-/workspace/.tmux/tmux.conf}"
+
+tmux_cmd=(tmux -u -f "$TMUX_CONFIG")
 
 codex_cmd=(
   codex
@@ -15,12 +18,13 @@ if [ "$#" -gt 0 ]; then
   codex_cmd+=("$@")
 fi
 
-if ! tmux has-session -t "$SESSION_NAME" 2>/dev/null; then
-  tmux new-session -d -s "$SESSION_NAME" -c "$WORKDIR" "${codex_cmd[@]}"
-  tmux rename-window -t "$SESSION_NAME:0" workspace
-  tmux split-window -h -t "$SESSION_NAME:0" -c "$WORKDIR"
-  tmux select-pane -t "$SESSION_NAME:0.0"
-  tmux set-option -t "$SESSION_NAME" remain-on-exit on
+if ! "${tmux_cmd[@]}" has-session -t "$SESSION_NAME" 2>/dev/null; then
+  "${tmux_cmd[@]}" new-session -d -s "$SESSION_NAME" -c "$WORKDIR" "${codex_cmd[@]}"
+  "${tmux_cmd[@]}" rename-window -t "$SESSION_NAME:0" workspace
+  "${tmux_cmd[@]}" split-window -h -t "$SESSION_NAME:0" -c "$WORKDIR"
+  "${tmux_cmd[@]}" select-pane -t "$SESSION_NAME:0.0"
+  "${tmux_cmd[@]}" set-option -t "$SESSION_NAME" remain-on-exit on
 fi
 
-exec tmux attach-session -t "$SESSION_NAME"
+"${tmux_cmd[@]}" source-file "$TMUX_CONFIG"
+exec "${tmux_cmd[@]}" attach-session -t "$SESSION_NAME"
