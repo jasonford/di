@@ -5,6 +5,7 @@ IMAGE="${IMAGE:-codex-dev}"
 CONTAINER_NAME="${CONTAINER_NAME:-codex-dev}"
 WORKDIR="${WORKDIR:-/workspace}"
 CODEX_VERSION="${CODEX_VERSION:-0.113.0}"
+BROOT_VERSION="${BROOT_VERSION:-v1.55.0}"
 MODEL="${MODEL:-gpt-5.4}"
 ALLOW_NET="${ALLOW_NET:-1}"
 
@@ -29,6 +30,7 @@ fi
 echo "Building image $IMAGE (Docker cache will be reused if unchanged)..."
 docker build \
   --build-arg "CODEX_VERSION=$CODEX_VERSION" \
+  --build-arg "BROOT_VERSION=$BROOT_VERSION" \
   -t "$IMAGE" \
   "$SCRIPT_DIR"
 
@@ -71,6 +73,7 @@ exec docker run --rm -it \
   -e VISUAL=nvim \
   -e EDITOR=nvim \
   -e TERM="${TERM:-xterm-256color}" \
+  -e BROOT_PANE_WIDTH="${BROOT_PANE_WIDTH:-45}" \
   -e MODEL="$MODEL" \
   -e CODEX_TMUX_SESSION="$TMUX_SESSION_NAME" \
   -u "$(id -u):$(id -g)" \

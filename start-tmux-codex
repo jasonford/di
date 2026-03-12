@@ -5,6 +5,8 @@ SESSION_NAME="${CODEX_TMUX_SESSION:-codex}"
 WORKDIR="${WORKDIR:-/workspace}"
 MODEL="${MODEL:-gpt-5.4}"
 TMUX_CONFIG="${TMUX_CONFIG:-/workspace/.tmux/tmux.conf}"
+BROOT_PANE_WIDTH="${BROOT_PANE_WIDTH:-45}"
+BROOT_CONFIG_HOME="${BROOT_CONFIG_HOME:-/workspace/.config}"
 
 tmux_cmd=(tmux -u -f "$TMUX_CONFIG")
 
@@ -18,10 +20,22 @@ if [ "$#" -gt 0 ]; then
   codex_cmd+=("$@")
 fi
 
+broot_cmd=(
+  env
+  BR_INSTALL=no
+  XDG_CONFIG_HOME="$BROOT_CONFIG_HOME"
+  BROOT_PANE_WIDTH="$BROOT_PANE_WIDTH"
+  broot
+)
+
 if ! "${tmux_cmd[@]}" has-session -t "$SESSION_NAME" 2>/dev/null; then
   "${tmux_cmd[@]}" new-session -d -s "$SESSION_NAME" -c "$WORKDIR" "${codex_cmd[@]}"
   "${tmux_cmd[@]}" rename-window -t "$SESSION_NAME:0" workspace
   "${tmux_cmd[@]}" set-option -t "$SESSION_NAME" remain-on-exit on
+  broot_pane="$("${tmux_cmd[@]}" split-window -h -P -F '#{pane_id}' -t "$SESSION_NAME:workspace.0" -c "$WORKDIR" "${broot_cmd[@]}")"
+  "${tmux_cmd[@]}" set-option -t "$SESSION_NAME" @broot_pane_id "$broot_pane"
+  "${tmux_cmd[@]}" resize-pane -t "$broot_pane" -x "$BROOT_PANE_WIDTH" 2>/dev/null || true
+  "${tmux_cmd[@]}" select-pane -t "$SESSION_NAME:workspace.0"
 fi
 
 "${tmux_cmd[@]}" source-file "$TMUX_CONFIG"

@@ -1,0 +1,13 @@
+verbs: [
+    {
+        invocation: "open_in_vim"
+        key: "enter"
+        apply_to: "file"
+        external: [
+            "/workspace/bin/broot-open-in-tmux"
+            "{file}"
+            "{line}"
+        ]
+        leave_broot: false
+    }
+]

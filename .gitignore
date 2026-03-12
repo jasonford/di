@@ -1,4 +1,10 @@
 .*
 !.dockerignore
 !.gitignore
+!.config
+!.config/
+!.config/broot
+!.config/broot/
+!.config/broot/conf.hjson
+!.config/broot/verbs.hjson
 !.tmux
