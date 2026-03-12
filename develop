@@ -7,6 +7,7 @@ WORKDIR="${WORKDIR:-/workspace}"
 CODEX_VERSION="${CODEX_VERSION:-0.113.0}"
 MODEL="${MODEL:-gpt-5.4}"
 ALLOW_NET="${ALLOW_NET:-1}"
+YAZI_VERSION="${YAZI_VERSION:-25.5.31}"
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 STATE_DIR="$SCRIPT_DIR/.codex-home"
@@ -29,6 +30,7 @@ fi
 echo "Building image $IMAGE (Docker cache will be reused if unchanged)..."
 docker build \
   --build-arg "CODEX_VERSION=$CODEX_VERSION" \
+  --build-arg "YAZI_VERSION=$YAZI_VERSION" \
   -t "$IMAGE" \
   "$SCRIPT_DIR"
 
