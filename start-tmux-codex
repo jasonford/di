@@ -16,10 +16,9 @@ if [ "$#" -gt 0 ]; then
 fi
 
 if ! tmux has-session -t "$SESSION_NAME" 2>/dev/null; then
-  tmux new-session -d -s "$SESSION_NAME" -c "$WORKDIR" bash
+  tmux new-session -d -s "$SESSION_NAME" -c "$WORKDIR" "${codex_cmd[@]}"
   tmux rename-window -t "$SESSION_NAME:0" workspace
   tmux split-window -h -t "$SESSION_NAME:0" -c "$WORKDIR"
-  tmux send-keys -t "$SESSION_NAME:0.1" "$(printf '%q ' "${codex_cmd[@]}")" C-m
   tmux select-pane -t "$SESSION_NAME:0.0"
   tmux set-option -t "$SESSION_NAME" remain-on-exit on
 fi

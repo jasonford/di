@@ -34,6 +34,10 @@ RUN npm install -g \
     vscode-langservers-extracted
 
 COPY nvim /opt/nvim-config/nvim
+COPY codex-nvim /usr/local/bin/codex-nvim
+
+RUN chmod +x /usr/local/bin/codex-nvim \
+  && ln -sf /usr/local/bin/codex-nvim /usr/local/bin/vim
 
 ENV XDG_CONFIG_HOME=/opt/nvim-config
 ENV XDG_DATA_HOME=/opt/nvim-data
