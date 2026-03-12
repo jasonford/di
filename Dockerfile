@@ -34,21 +34,8 @@ RUN npm install -g \
     typescript-language-server \
     vscode-langservers-extracted
 
-COPY nvim /opt/nvim-config/nvim
-COPY codex-nvim /usr/local/bin/codex-nvim
-
-RUN chmod +x /usr/local/bin/codex-nvim \
-  && ln -sf /usr/local/bin/codex-nvim /usr/local/bin/vim
-
-ENV XDG_CONFIG_HOME=/opt/nvim-config
-ENV XDG_DATA_HOME=/opt/nvim-data
-ENV XDG_CACHE_HOME=/tmp/nvim-cache
-ENV XDG_STATE_HOME=/tmp/nvim-state
-
-RUN mkdir -p "$XDG_DATA_HOME" "$XDG_CACHE_HOME" "$XDG_STATE_HOME" \
-  && nvim --version \
-  && nvim --headless "+Lazy! sync" +qa \
-  && nvim --headless "+TSUpdateSync lua vim vimdoc query javascript typescript tsx python json bash markdown markdown_inline" +qa
+RUN nvim --version \
+  && ln -sf /usr/local/bin/nvim /usr/local/bin/vim
 
 WORKDIR /workspace
 CMD ["codex"]
