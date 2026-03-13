@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+SCRIPT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SESSION_NAME="${CODEX_TMUX_SESSION:-codex}"
-WORKDIR="${WORKDIR:-/workspace}"
+WORKDIR="${WORKDIR:-$SCRIPT_ROOT}"
 MODEL="${MODEL:-gpt-5.4}"
-TMUX_CONFIG="${TMUX_CONFIG:-/workspace/.tmux/tmux.conf}"
+TMUX_CONFIG="${TMUX_CONFIG:-$SCRIPT_ROOT/.tmux/tmux.conf}"
 BROOT_PANE_WIDTH="${BROOT_PANE_WIDTH:-45}"
-BROOT_CONFIG_HOME="${BROOT_CONFIG_HOME:-/workspace/.config}"
 
 tmux_cmd=(tmux -u -f "$TMUX_CONFIG")
 
@@ -23,9 +23,8 @@ fi
 broot_cmd=(
   env
   BR_INSTALL=no
-  XDG_CONFIG_HOME="$BROOT_CONFIG_HOME"
-  BROOT_PANE_WIDTH="$BROOT_PANE_WIDTH"
-  /workspace/bin/broot-in-proot
+  "$SCRIPT_ROOT/bin/broot-in-proot"
+  "$WORKDIR"
 )
 
 if ! "${tmux_cmd[@]}" has-session -t "$SESSION_NAME" 2>/dev/null; then

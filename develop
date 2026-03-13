@@ -78,5 +78,5 @@ exec docker run --rm -it \
   -e CODEX_TMUX_SESSION="$TMUX_SESSION_NAME" \
   -u "$(id -u):$(id -g)" \
   "$IMAGE" \
-  bash /workspace/start-tmux-codex \
+  bash "$WORKDIR/start-tmux-codex" \
   "$@"
