@@ -29,6 +29,7 @@ mkdir -p "$runtime_dir/conf" "$runtime_dir/rootfs" "$runtime_dir/xdg-config"
 
 cat >"$runtime_dir/conf/conf.hjson" <<'EOF'
 {
+    default_flags: "-g"
     special_paths: {
         "/bin": { show: "never", list: "never", sum: "never" },
         "/dev": { show: "never", list: "never", sum: "never" },

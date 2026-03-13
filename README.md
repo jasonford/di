@@ -21,7 +21,7 @@ chmod +x develop
 - You can tell Codex what to edit in plain language, for example `edit README.md`, `fix the Docker launcher`, or `change the Neovim config to ...`. Codex should infer the relevant file(s) from repo context and proceed unless the target is genuinely ambiguous.
 - Open files with plain `nvim` inside the container
 - Running `vim` in the container opens the same vanilla Neovim binary
-- `broot` launches in the right pane as plain upstream `broot`
+- `broot` launches in the right pane as upstream `broot`, with git file status info enabled by default
 - `broot` is launched through `proot`, with the mounted repo as its effective filesystem root, so parent system paths stay out of view
 
 ## Notes
