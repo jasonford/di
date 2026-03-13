@@ -1,0 +1,95 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+SCRIPT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+TMUX_SOCKET_NAME="broot-live-smoke-$$"
+TMUX_SESSION_NAME="broot-live-smoke"
+TMUX_CONFIG="${TMUX_CONFIG:-$SCRIPT_ROOT/.tmux/tmux.conf}"
+POLL_INTERVAL="${BROOT_LIVE_UPDATE_POLL_INTERVAL:-0.25}"
+TIMEOUT_SECONDS="${BROOT_LIVE_UPDATE_TIMEOUT:-10}"
+
+tmux_cmd=(tmux -u -L "$TMUX_SOCKET_NAME" -f "$TMUX_CONFIG")
+tmp_dir="$(mktemp -d /tmp/broot-live-update.XXXXXX)"
+test_repo="$tmp_dir/repo"
+last_capture=""
+
+cleanup() {
+  "${tmux_cmd[@]}" kill-session -t "$TMUX_SESSION_NAME" >/dev/null 2>&1 || true
+  "${tmux_cmd[@]}" kill-server >/dev/null 2>&1 || true
+  rm -rf "$tmp_dir"
+}
+trap cleanup EXIT
+
+require_command() {
+  local command_name="$1"
+  if ! command -v "$command_name" >/dev/null 2>&1; then
+    printf 'missing required command: %s\n' "$command_name" >&2
+    exit 1
+  fi
+}
+
+capture_pane() {
+  last_capture="$("${tmux_cmd[@]}" capture-pane -p -t "$TMUX_SESSION_NAME:0.0" 2>/dev/null || true)"
+}
+
+pane_dead() {
+  "${tmux_cmd[@]}" display-message -p -t "$TMUX_SESSION_NAME:0.0" "#{pane_dead}" 2>/dev/null || printf '1\n'
+}
+
+wait_for_text() {
+  local expected="$1"
+  local deadline=$((SECONDS + TIMEOUT_SECONDS))
+  while (( SECONDS < deadline )); do
+    capture_pane
+    if [[ "$last_capture" == *"$expected"* ]]; then
+      return 0
+    fi
+    if [[ "$(pane_dead)" == "1" ]]; then
+      return 1
+    fi
+    sleep "$POLL_INTERVAL"
+  done
+  capture_pane
+  [[ "$last_capture" == *"$expected"* ]]
+}
+
+launch_tmux_session() {
+  local launch_cmd
+  printf -v launch_cmd 'TERM=tmux-256color %q %q --cmd %q' \
+    "$SCRIPT_ROOT/bin/broot-in-proot" \
+    "$test_repo" \
+    ':toggle_watch'
+  "${tmux_cmd[@]}" new-session -d -s "$TMUX_SESSION_NAME" -x 120 -y 20 "$launch_cmd"
+}
+
+init_repo() {
+  mkdir -p "$test_repo"
+  git init -q "$test_repo"
+  git -C "$test_repo" config user.name Test
+  git -C "$test_repo" config user.email test@example.com
+  printf 'a\nb\n' >"$test_repo/a.txt"
+  git -C "$test_repo" add a.txt
+  git -C "$test_repo" commit -q -m init
+}
+
+require_command git
+require_command tmux
+
+init_repo
+launch_tmux_session
+
+if ! wait_for_text '+0-0'; then
+  printf 'broot pane never reached the initial clean git state\n' >&2
+  printf '%s\n' "$last_capture" >&2
+  exit 1
+fi
+
+printf 'c\n' >>"$test_repo/a.txt"
+
+if ! wait_for_text '+1-0'; then
+  printf 'broot pane did not live update after editing a tracked file\n' >&2
+  printf '%s\n' "$last_capture" >&2
+  exit 1
+fi
+
+printf 'broot live update smoke test passed\n'

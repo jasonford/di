@@ -350,6 +350,182 @@ index 0500e46..925074b 100644
 +fn delta_path<'a>(delta: &'a DiffDelta<'a>) -> Option<&'a Path> {
 +    delta.new_file().path().or_else(|| delta.old_file().path())
 +}
+diff --git a/src/tree/tree.rs b/src/tree/tree.rs
+index 4b57501..dba1a70 100644
+--- a/src/tree/tree.rs
++++ b/src/tree/tree.rs
+@@ -17,7 +17,6 @@ use {
+     rustc_hash::FxHashMap,
+     std::{
+         cmp::Ord,
+-        mem,
+         path::{
+             Path,
+             PathBuf,
+@@ -48,19 +47,18 @@ impl Tree {
+         page_height: usize,
+         con: &AppContext,
+     ) -> Result<(), TreeBuildError> {
++        let selected_path = self.selected_line().path.to_path_buf();
+         let builder = TreeBuilder::from(
+             self.root().to_path_buf(),
+             self.options.clone(),
+             page_height,
+             con,
+         )?;
+-        self.total_search = false; // on refresh we always do a non total search
+         let mut tree = builder
+-            .build_tree(self.total_search, &Dam::unlimited())
++            .build_tree(false, &Dam::unlimited())
+             .unwrap(); // should not fail
+-        let selected_path = self.selected_line().path.to_path_buf();
+-        mem::swap(&mut self.lines, &mut tree.lines);
+-        self.scroll = 0;
++        tree.scroll = 0;
++        *self = tree;
+         if !self.try_select_path(&selected_path) && self.selection >= self.lines.len() {
+             self.selection = 0;
+         }
+@@ -679,3 +677,139 @@ impl Tree {
+         Ok(())
+     }
+ }
++
++#[cfg(test)]
++mod tests {
++    use {
++        super::*,
++        crate::{
++            app::AppContext,
++            git::TreeGitStatus,
++            task_sync::{
++                ComputationResult,
++                Dam,
++            },
++        },
++        git2::{
++            IndexAddOption,
++            Repository,
++            Signature,
++        },
++        std::{
++            fs,
++            path::Path,
++        },
++        tempfile::TempDir,
++    };
++
++    #[test]
++    fn refresh_replaces_stale_tree_git_status() {
++        let (_tmp_dir, repo_root, file_path) = init_repo();
++        let con = git_context();
++        let mut tree = build_git_tree(&repo_root, &con);
++        tree.git_status = ComputationResult::Done(TreeGitStatus {
++            current_branch_name: Some(String::from("stale")),
++            insertions: 0,
++            deletions: 0,
++        });
++
++        fs::write(&file_path, "a\nb\nc\n").unwrap();
++        tree.refresh(50, &con).unwrap();
++
++        assert!(tree.git_status.is_not_computed());
++    }
++
++    #[test]
++    fn refresh_updates_line_diff_stats_for_file_and_parent() {
++        let (_tmp_dir, repo_root, file_path) = init_repo();
++        let dir_path = file_path.parent().unwrap().to_path_buf();
++        let con = git_context();
++        let mut tree = build_git_tree(&repo_root, &con);
++
++        fs::write(&file_path, "a\nb\nc\nd\n").unwrap();
++        tree.refresh(50, &con).unwrap();
++
++        let file_stats = diff_stats_for_path(&tree, &file_path).unwrap();
++        assert_eq!(file_stats.insertions, 2);
++        assert_eq!(file_stats.deletions, 0);
++
++        let dir_stats = diff_stats_for_path(&tree, &dir_path).unwrap();
++        assert_eq!(dir_stats.insertions, 2);
++        assert_eq!(dir_stats.deletions, 0);
++    }
++
++    fn git_context() -> AppContext {
++        let mut con = AppContext::default();
++        con.initial_tree_options.show_git_file_info = true;
++        con
++    }
++
++    fn build_git_tree(
++        repo_root: &Path,
++        con: &AppContext,
++    ) -> Tree {
++        TreeBuilder::from(
++            repo_root.to_path_buf(),
++            con.initial_tree_options.clone(),
++            50,
++            con,
++        )
++        .unwrap()
++        .build_tree(false, &Dam::unlimited())
++        .unwrap()
++    }
++
++    fn diff_stats_for_path(
++        tree: &Tree,
++        path: &Path,
++    ) -> Option<crate::git::LineDiffStats> {
++        tree.lines
++            .iter()
++            .find(|line| line.path == path)
++            .and_then(|line| line.git_status)
++            .and_then(|status| status.diff_stats)
++    }
++
++    fn init_repo() -> (TempDir, PathBuf, PathBuf) {
++        let tmp_dir = tempfile::tempdir().unwrap();
++        let repo_root = tmp_dir.path().to_path_buf();
++        let repo = Repository::init(&repo_root).unwrap();
++        let file_path = repo_root.join("sub/a.txt");
++
++        fs::create_dir_all(file_path.parent().unwrap()).unwrap();
++        fs::write(&file_path, "a\nb\n").unwrap();
++        commit_all(&repo, "init");
++
++        (tmp_dir, repo_root, file_path)
++    }
++
++    fn commit_all(
++        repo: &Repository,
++        message: &str,
++    ) {
++        let mut index = repo.index().unwrap();
++        index
++            .add_all(["*"].iter(), IndexAddOption::DEFAULT, None)
++            .unwrap();
++        index.write().unwrap();
++        let tree_id = index.write_tree().unwrap();
++        let tree = repo.find_tree(tree_id).unwrap();
++        let signature = Signature::now("Test", "test@example.com").unwrap();
++        let parent_commit = repo
++            .head()
++            .ok()
++            .and_then(|head| head.target())
++            .and_then(|oid| repo.find_commit(oid).ok());
++
++        match parent_commit {
++            Some(parent) => {
++                repo.commit(Some("HEAD"), &signature, &signature, message, &tree, &[&parent])
++                    .unwrap();
++            }
++            None => {
++                repo.commit(Some("HEAD"), &signature, &signature, message, &tree, &[])
++                    .unwrap();
++            }
++        }
++    }
++}
 diff --git a/src/watcher.rs b/src/watcher.rs
 index 80ee41c..78810ba 100644
 --- a/src/watcher.rs
