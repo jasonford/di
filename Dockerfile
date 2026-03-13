@@ -18,7 +18,7 @@ RUN git apply /tmp/broot-selection-output.patch \
 
 FROM node:22-bookworm-slim
 
-ARG CODEX_VERSION=0.113.0
+ARG CODEX_VERSION=0.114.0
 ARG NVIM_VERSION=v0.11.5
 
 RUN apt-get update && apt-get install -y --no-install-recommends \

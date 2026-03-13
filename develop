@@ -4,10 +4,11 @@ set -euo pipefail
 IMAGE="${IMAGE:-codex-dev}"
 CONTAINER_NAME="${CONTAINER_NAME:-codex-dev}"
 WORKDIR="${WORKDIR:-/workspace}"
-CODEX_VERSION="${CODEX_VERSION:-0.113.0}"
+CODEX_VERSION="${CODEX_VERSION:-0.114.0}"
 BROOT_VERSION="${BROOT_VERSION:-v1.55.0}"
 MODEL="${MODEL:-gpt-5.4}"
 ALLOW_NET="${ALLOW_NET:-1}"
+CODEX_NO_ALT_SCREEN="${CODEX_NO_ALT_SCREEN:-1}"
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 STATE_DIR="$SCRIPT_DIR/.codex-home"
@@ -76,6 +77,7 @@ exec docker run --rm -it \
   -e BROOT_PANE_WIDTH="${BROOT_PANE_WIDTH:-45}" \
   -e BROOT_PREVIEW_PANE_PERCENT="${BROOT_PREVIEW_PANE_PERCENT:-35}" \
   -e MODEL="$MODEL" \
+  -e CODEX_NO_ALT_SCREEN="$CODEX_NO_ALT_SCREEN" \
   -e CODEX_TMUX_SESSION="$TMUX_SESSION_NAME" \
   -u "$(id -u):$(id -g)" \
   "$IMAGE" \

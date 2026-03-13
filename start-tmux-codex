@@ -8,6 +8,7 @@ MODEL="${MODEL:-gpt-5.4}"
 TMUX_CONFIG="${TMUX_CONFIG:-$SCRIPT_ROOT/.tmux/tmux.conf}"
 BROOT_PANE_WIDTH="${BROOT_PANE_WIDTH:-45}"
 BROOT_PREVIEW_PANE_PERCENT="${BROOT_PREVIEW_PANE_PERCENT:-35}"
+CODEX_NO_ALT_SCREEN="${CODEX_NO_ALT_SCREEN:-1}"
 
 if ! [[ "$BROOT_PREVIEW_PANE_PERCENT" =~ ^[0-9]+$ ]] || [ "$BROOT_PREVIEW_PANE_PERCENT" -le 0 ] || [ "$BROOT_PREVIEW_PANE_PERCENT" -ge 100 ]; then
   BROOT_PREVIEW_PANE_PERCENT=35
@@ -24,6 +25,10 @@ codex_cmd=(
   --model "$MODEL"
   --dangerously-bypass-approvals-and-sandbox
 )
+
+if [ "$CODEX_NO_ALT_SCREEN" != "0" ]; then
+  codex_cmd+=(--no-alt-screen)
+fi
 
 if [ "$#" -gt 0 ]; then
   codex_cmd+=("$@")

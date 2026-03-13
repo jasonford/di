@@ -18,6 +18,7 @@ chmod +x develop
 
 - Start in a full Codex session with `./develop`
 - Startup layout is `codex | broot / preview`
+- Codex starts in inline mode by default (`--no-alt-screen`) so tmux pane scrollback and redraw are more reliable
 - You can tell Codex what to edit in plain language, for example `edit README.md`, `fix the Docker launcher`, or `change the Neovim config to ...`. Codex should infer the relevant file(s) from repo context and proceed unless the target is genuinely ambiguous.
 - Open files with plain `nvim` inside the container
 - Running `vim` in the container opens the same vanilla Neovim binary
@@ -29,9 +30,12 @@ chmod +x develop
 
 - Codex auth persists in `.codex-home/.codex`
 - The tmux session name defaults to `codex`; override it with `TMUX_SESSION_NAME=... ./develop`
+- Set `CODEX_NO_ALT_SCREEN=0 ./develop` to restore alternate-screen mode
 - The image installs Neovim from the upstream release tarball
+- The image pins `@openai/codex` to `0.114.0`
 - The image builds a patched `broot` from the upstream source tag selected by `BROOT_VERSION=... ./develop`
 - The bundled patch tracks `v1.55.0`; if you change `BROOT_VERSION`, you may need to refresh `patches/broot-selection-output.patch`
 - Override the `broot` pane width with `BROOT_PANE_WIDTH=... ./develop`
 - Override the preview pane height with `BROOT_PREVIEW_PANE_PERCENT=... ./develop`
+- This improves tmux scrolling and redraw behavior, but does not fully eliminate upstream live-resize quirks in Codex itself
 - Docker cache avoids redoing the expensive build layers when unchanged
