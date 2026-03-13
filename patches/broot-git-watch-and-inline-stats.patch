@@ -1,0 +1,456 @@
+diff --git a/src/browser/browser_state.rs b/src/browser/browser_state.rs
+index 2756f98..443dee1 100644
+--- a/src/browser/browser_state.rs
++++ b/src/browser/browser_state.rs
+@@ -227,9 +227,15 @@ impl PanelState for BrowserState {
+     }
+ 
+     fn watchable_paths(&self) -> Vec<PathBuf> {
+-        let mut paths = Vec::new();
+-        for line in &self.tree.lines {
+-            paths.push(line.path.clone());
++        let root = self.tree.root().clone();
++        let mut paths = vec![root.clone()];
++        if let Some(repo_root) = git::closest_repo_dir(&root) {
++            if repo_root != root {
++                let git_path = repo_root.join(".git");
++                if git_path.exists() {
++                    paths.push(git_path);
++                }
++            }
+         }
+         paths
+     }
+diff --git a/src/display/displayable_tree.rs b/src/display/displayable_tree.rs
+index 9df8672..bd30087 100644
+--- a/src/display/displayable_tree.rs
++++ b/src/display/displayable_tree.rs
+@@ -226,7 +226,7 @@ impl<'a, 's, 't> DisplayableTree<'a, 's, 't> {
+         let (style, char) = if !line.is_selectable() {
+             (&self.skin.tree, ' ')
+         } else {
+-            match line.git_status.map(|s| s.status) {
++            match line.git_status.and_then(|status| status.display_status()) {
+                 Some(Status::CURRENT) => (&self.skin.git_status_current, ' '),
+                 Some(Status::WT_NEW) => (&self.skin.git_status_new, 'N'),
+                 Some(Status::CONFLICTED) => (&self.skin.git_status_conflicted, 'C'),
+@@ -241,6 +241,27 @@ impl<'a, 's, 't> DisplayableTree<'a, 's, 't> {
+         Ok(0)
+     }
+ 
++    fn write_line_diff_stats<W: Write>(
++        &self,
++        cw: &mut CropWriter<W>,
++        line: &TreeLine,
++        selected: bool,
++    ) -> Result<(), ProgramError> {
++        let Some(diff_stats) = line
++            .git_status
++            .and_then(|git_status| git_status.diff_stats)
++            .filter(|diff_stats| diff_stats.has_changes())
++        else {
++            return Ok(());
++        };
++        cond_bg!(insertions_style, self, selected, self.skin.git_insertions);
++        cond_bg!(deletions_style, self, selected, self.skin.git_deletions);
++        cw.queue_char(insertions_style, ' ')?;
++        cw.queue_g_string(insertions_style, format!("+{}", diff_stats.insertions))?;
++        cw.queue_g_string(deletions_style, format!("-{}", diff_stats.deletions))?;
++        Ok(())
++    }
++
+     fn write_date<W: Write>(
+         &self,
+         cw: &mut CropWriter<W>,
+@@ -381,6 +402,7 @@ impl<'a, 's, 't> DisplayableTree<'a, 's, 't> {
+             }
+             _ => {}
+         }
++        self.write_line_diff_stats(cw, line, selected)?;
+         Ok(1)
+     }
+ 
+diff --git a/src/git/status.rs b/src/git/status.rs
+index 0500e46..925074b 100644
+--- a/src/git/status.rs
++++ b/src/git/status.rs
+@@ -1,8 +1,12 @@
+ use {
+     git2::{
+         self,
++        DiffDelta,
++        DiffOptions,
++        Patch,
+         Repository,
+         Status,
++        StatusOptions,
+     },
+     rustc_hash::FxHashMap,
+     std::path::{
+@@ -12,16 +16,45 @@ use {
+ };
+ 
+ const INTERESTING: Status = Status::from_bits_truncate(
+-    Status::WT_NEW.bits()
++    Status::INDEX_NEW.bits()
++        | Status::INDEX_MODIFIED.bits()
++        | Status::INDEX_DELETED.bits()
++        | Status::INDEX_RENAMED.bits()
++        | Status::INDEX_TYPECHANGE.bits()
++        | Status::WT_NEW.bits()
+         | Status::CONFLICTED.bits()
+         | Status::WT_MODIFIED.bits()
++        | Status::WT_DELETED.bits()
++        | Status::WT_RENAMED.bits()
++        | Status::WT_TYPECHANGE.bits()
+         | Status::IGNORED.bits(),
+ );
+ 
++#[derive(Debug, Clone, Copy, Default)]
++pub struct LineDiffStats {
++    pub insertions: usize,
++    pub deletions: usize,
++}
++
++impl LineDiffStats {
++    pub fn has_changes(self) -> bool {
++        self.insertions > 0 || self.deletions > 0
++    }
++
++    fn add(
++        &mut self,
++        other: LineDiffStats,
++    ) {
++        self.insertions += other.insertions;
++        self.deletions += other.deletions;
++    }
++}
++
+ /// A git status
+ #[derive(Debug, Clone, Copy)]
+ pub struct LineGitStatus {
+-    pub status: Status,
++    pub status: Option<Status>,
++    pub diff_stats: Option<LineDiffStats>,
+ }
+ 
+ impl LineGitStatus {
+@@ -31,10 +64,42 @@ impl LineGitStatus {
+     ) -> Option<LineGitStatus> {
+         repo.status_file(relative_path)
+             .ok()
+-            .map(|status| LineGitStatus { status })
++            .and_then(|status| {
++                status.intersects(INTERESTING).then_some(LineGitStatus {
++                    status: Some(status),
++                    diff_stats: None,
++                })
++            })
+     }
+     pub fn is_interesting(self) -> bool {
+-        self.status.intersects(INTERESTING)
++        self.status.is_some_and(|status| status.intersects(INTERESTING))
++            || self.diff_stats.is_some_and(LineDiffStats::has_changes)
++    }
++
++    pub fn display_status(self) -> Option<Status> {
++        let status = self.status?;
++        if status.intersects(Status::CONFLICTED) {
++            Some(Status::CONFLICTED)
++        } else if status.intersects(Status::INDEX_NEW | Status::WT_NEW) {
++            Some(Status::WT_NEW)
++        } else if status.intersects(
++            Status::INDEX_MODIFIED
++                | Status::INDEX_DELETED
++                | Status::INDEX_RENAMED
++                | Status::INDEX_TYPECHANGE
++                | Status::WT_MODIFIED
++                | Status::WT_DELETED
++                | Status::WT_RENAMED
++                | Status::WT_TYPECHANGE,
++        ) {
++            Some(Status::WT_MODIFIED)
++        } else if status.intersects(Status::IGNORED) {
++            Some(Status::IGNORED)
++        } else if status == Status::CURRENT {
++            Some(Status::CURRENT)
++        } else {
++            Some(status)
++        }
+     }
+ }
+ 
+@@ -42,39 +107,86 @@ impl LineGitStatus {
+ /// looks at all the statuses of the repo and build a map path->status
+ /// which can then be efficiently queried
+ pub struct LineStatusComputer {
+-    interesting_statuses: FxHashMap<PathBuf, Status>,
++    line_statuses: FxHashMap<PathBuf, LineGitStatus>,
+ }
+ impl LineStatusComputer {
+     pub fn from(repo: Repository) -> Option<Self> {
+         let workdir = repo.workdir()?;
+-        let mut interesting_statuses = FxHashMap::default();
+-        let statuses = repo.statuses(None).ok()?;
++        let mut line_statuses = FxHashMap::default();
++        let mut status_options = status_options();
++        let statuses = repo.statuses(Some(&mut status_options)).ok()?;
+         for entry in statuses.iter() {
+             let status = entry.status();
+             if status.intersects(INTERESTING) {
+                 if let Some(path) = entry.path() {
+                     let path = workdir.join(path);
+-                    interesting_statuses.insert(path, status);
++                    line_statuses.insert(
++                        path,
++                        LineGitStatus {
++                            status: Some(status),
++                            diff_stats: None,
++                        },
++                    );
+                 }
+             }
+         }
++        with_head_to_workdir_diff(&repo, |diff| {
++            for (idx, delta) in diff.deltas().enumerate() {
++                let Some(path) = delta_path(&delta) else {
++                    continue;
++                };
++                let Some(patch) = Patch::from_diff(diff, idx).ok().flatten() else {
++                    continue;
++                };
++                let Ok((_, insertions, deletions)) = patch.line_stats() else {
++                    continue;
++                };
++                let diff_stats = LineDiffStats {
++                    insertions,
++                    deletions,
++                };
++                if !diff_stats.has_changes() {
++                    continue;
++                }
++                let mut current_path = Some(workdir.join(path));
++                while let Some(path) = current_path {
++                    line_statuses
++                        .entry(path.clone())
++                        .and_modify(|line_status| {
++                            line_status
++                                .diff_stats
++                                .get_or_insert_with(LineDiffStats::default)
++                                .add(diff_stats);
++                        })
++                        .or_insert(LineGitStatus {
++                            status: None,
++                            diff_stats: Some(diff_stats),
++                        });
++                    if path == workdir {
++                        break;
++                    }
++                    current_path = path.parent().map(Path::to_path_buf);
++                }
++            }
++            Some(())
++        });
+         Some(Self {
+-            interesting_statuses,
++            line_statuses,
+         })
+     }
+     pub fn line_status(
+         &self,
+         path: &Path,
+     ) -> Option<LineGitStatus> {
+-        self.interesting_statuses
+-            .get(path)
+-            .map(|&status| LineGitStatus { status })
++        self.line_statuses.get(path).copied()
+     }
+     pub fn is_interesting(
+         &self,
+         path: &Path,
+     ) -> bool {
+-        self.interesting_statuses.contains_key(path)
++        self.line_statuses
++            .get(path)
++            .is_some_and(|line_status| line_status.is_interesting())
+     }
+ }
+ 
+@@ -91,23 +203,60 @@ impl TreeGitStatus {
+             .head()
+             .ok()
+             .and_then(|head| head.shorthand().map(String::from));
+-        let stats = match repo.diff_index_to_workdir(None, None) {
+-            Ok(diff) => match diff.stats() {
+-                Ok(stats) => stats,
+-                Err(e) => {
+-                    debug!("get stats failed : {:?}", e);
+-                    return None;
+-                }
+-            },
++        let (insertions, deletions) = with_head_to_workdir_diff(repo, |diff| match diff.stats() {
++            Ok(stats) => Some((stats.insertions(), stats.deletions())),
+             Err(e) => {
+-                debug!("get diff failed : {:?}", e);
+-                return None;
++                debug!("get stats failed : {:?}", e);
++                None
+             }
+-        };
++        })?;
+         Some(Self {
+             current_branch_name,
+-            insertions: stats.insertions(),
+-            deletions: stats.deletions(),
++            insertions,
++            deletions,
+         })
+     }
+ }
++
++fn status_options() -> StatusOptions {
++    let mut options = StatusOptions::new();
++    options
++        .include_untracked(true)
++        .recurse_untracked_dirs(true)
++        .include_ignored(true)
++        .recurse_ignored_dirs(true)
++        .renames_head_to_index(true)
++        .renames_index_to_workdir(true)
++        .renames_from_rewrites(true)
++        .update_index(true);
++    options
++}
++
++fn diff_options() -> DiffOptions {
++    let mut options = DiffOptions::new();
++    options
++        .include_untracked(true)
++        .recurse_untracked_dirs(true)
++        .show_untracked_content(true);
++    options
++}
++
++fn with_head_to_workdir_diff<T>(
++    repo: &Repository,
++    f: impl FnOnce(&git2::Diff<'_>) -> Option<T>,
++) -> Option<T> {
++    let mut options = diff_options();
++    let head_tree = repo.head().ok().and_then(|head| head.peel_to_tree().ok());
++    let diff = match repo.diff_tree_to_workdir_with_index(head_tree.as_ref(), Some(&mut options)) {
++        Ok(diff) => diff,
++        Err(e) => {
++            debug!("get diff failed : {:?}", e);
++            return None;
++        }
++    };
++    f(&diff)
++}
++
++fn delta_path<'a>(delta: &'a DiffDelta<'a>) -> Option<&'a Path> {
++    delta.new_file().path().or_else(|| delta.old_file().path())
++}
+diff --git a/src/watcher.rs b/src/watcher.rs
+index 80ee41c..78810ba 100644
+--- a/src/watcher.rs
++++ b/src/watcher.rs
+@@ -26,14 +26,10 @@ const DEBOUNCE_MAX_DELAY: std::time::Duration = std::time::Duration::from_millis
+ 
+ /// Watch for notify events on a path, and send a :refresh sequence when a change is detected
+ ///
+-/// inotify events are debounced:
+-/// - an isolated event sends a refresh immediately
+-/// - successive events after the first one will have to wait a little
+-/// - there's at most one refrest sent every DEBOUNCE_MAX_DELAY
+-/// - if there's a long sequence of events, it's guaranteed that there's one
+-///   refresh sent every DEBOUNCE_MAX_DELAY
+-/// - the last event of the sequence is always sent (with a delay of
+-///   at most DEBOUNCE_MAX_DELAY), ensuring we don't miss any change
++/// notify events are debounced:
++/// - an isolated event tries to send a refresh immediately
++/// - successive events after the first one are coalesced
++/// - after a burst of events, we keep retrying until one final refresh is queued
+ pub struct Watcher {
+     notify_sender: channel::Sender<()>,
+     notify_watcher: Option<RecommendedWatcher>,
+@@ -45,23 +41,31 @@ impl Watcher {
+         let (notify_sender, notify_receiver) = channel::unbounded();
+         thread::spawn(move || {
+-            let mut period_events = 0;
++            let mut period_events: usize = 0;
++            let mut pending_refresh = false;
+             loop {
+                 match notify_receiver.recv_timeout(DEBOUNCE_MAX_DELAY) {
+                     Ok(()) => {
+                         period_events += 1;
+-                        if period_events > 1 {
+-                            continue;
++                        if period_events == 1 {
++                            debug!("received isolated event");
++                            pending_refresh = !Self::try_send_refresh(&tx_seqs);
++                        } else {
++                            pending_refresh = true;
+                         }
+-                        debug!("sending single event");
+-                        Self::send_refresh(&tx_seqs);
+                     }
+                     Err(channel::RecvTimeoutError::Timeout) => {
+-                        if period_events <= 1 {
+-                            continue;
++                        if pending_refresh {
++                            debug!(
++                                "sending aggregation of {} pending events",
++                                period_events.saturating_sub(1),
++                            );
++                            if Self::try_send_refresh(&tx_seqs) {
++                                pending_refresh = false;
++                                period_events = 0;
++                            }
++                        } else if period_events > 0 {
++                            period_events = 0;
+                         }
+-                        debug!("sending aggregation of {} pending events", period_events - 1);
+-                        Self::send_refresh(&tx_seqs);
+-                        period_events = 0;
+                     }
+                     Err(channel::RecvTimeoutError::Disconnected) => {
+                         info!("notify sender disconnected, stopping notify watcher thread");
+@@ -76,17 +80,19 @@ impl Watcher {
+             watched: Default::default(),
+         }
+     }
+-    fn send_refresh(
++    fn try_send_refresh(
+         tx_seqs: &channel::Sender<Sequence>,
+-    ) {
++    ) -> bool {
+         if !tx_seqs.is_empty() {
+-            // let's avoid accumulating refreshes when the tree is long to update
+-            debug!("skipping refresh, channel full");
+-            return;
++            debug!("delaying refresh while the sequence channel is busy");
++            return false;
+         }
+         let sequence = Sequence::new_single(":refresh");
+         if let Err(e) = tx_seqs.send(sequence) {
+             warn!("error when sending sequence from watcher: {}", e);
++            false
++        } else {
++            true
+         }
+     }
+     /// stop watching the previous path, watch new one.
+@@ -118,7 +124,12 @@ impl Watcher {
+                 return Ok(());
+             }
+             debug!("add watch {:?}", &path);
+-            if let Err(e) = notify_watcher.watch(path, RecursiveMode::NonRecursive) {
++            let recursive_mode = if path.is_dir() {
++                RecursiveMode::Recursive
++            } else {
++                RecursiveMode::NonRecursive
++            };
++            if let Err(e) = notify_watcher.watch(path, recursive_mode) {
+                 warn!("error when watching path {:?}: {}", path, e);
+                 err = Some(e);
+                 break;

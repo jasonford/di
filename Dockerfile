@@ -13,7 +13,9 @@ WORKDIR /src
 RUN git clone --depth 1 --branch "${BROOT_VERSION}" https://github.com/Canop/broot broot
 WORKDIR /src/broot
 COPY patches/broot-selection-output.patch /tmp/broot-selection-output.patch
+COPY patches/broot-git-watch-and-inline-stats.patch /tmp/broot-git-watch-and-inline-stats.patch
 RUN git apply /tmp/broot-selection-output.patch \
+  && git apply /tmp/broot-git-watch-and-inline-stats.patch \
   && cargo build --release --locked
 
 FROM node:22-bookworm-slim

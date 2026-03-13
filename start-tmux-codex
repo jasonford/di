@@ -40,6 +40,7 @@ broot_cmd=(
   BROOT_SELECTION_OUTPUT="$selection_output"
   "$SCRIPT_ROOT/bin/broot-in-proot"
   "$WORKDIR"
+  --cmd ":toggle_watch"
 )
 
 preview_cmd=(
