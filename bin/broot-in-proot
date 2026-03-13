@@ -91,6 +91,11 @@ if [ "${#broot_args[@]}" -eq 0 ]; then
   broot_args=(/workspace)
 fi
 
+broot_extra_args=()
+if [ -n "${BROOT_SELECTION_OUTPUT:-}" ]; then
+  broot_extra_args+=(--selection-output "$BROOT_SELECTION_OUTPUT")
+fi
+
 exec env \
   BR_INSTALL=no \
   XDG_CONFIG_HOME="$runtime_dir/xdg-config" \
@@ -98,4 +103,5 @@ exec env \
   "${proot_args[@]}" \
   /usr/local/bin/broot \
   --conf "$runtime_dir/conf/conf.hjson" \
+  "${broot_extra_args[@]}" \
   "${broot_args[@]}"

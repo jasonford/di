@@ -1,0 +1,141 @@
+diff --git a/src/app/app.rs b/src/app/app.rs
+index 0aa00c1..63121e0 100644
+--- a/src/app/app.rs
++++ b/src/app/app.rs
+@@ -33,6 +33,7 @@ use {
+         queue,
+     },
+     std::{
++        fs,
+         io::Write,
+         path::{
+             Path,
+@@ -45,6 +46,7 @@ use {
+         },
+     },
+     strict::NonEmptyVec,
++    tempfile::NamedTempFile,
+     termimad::{
+         EventSource,
+         EventSourceOptions,
+@@ -95,6 +97,12 @@ pub struct App {
+ 
+     /// a watcher for notify events
+     watcher: Watcher,
++
++    /// whether the current selection has been synced to the selection output file
++    selection_output_synced: bool,
++
++    /// the last path written to the selection output file
++    last_selection_output: Option<PathBuf>,
+ }
+ 
+ impl App {
+@@ -132,6 +140,8 @@ impl App {
+             rx_seqs,
+             drawing_count: 0,
+             watcher,
++            selection_output_synced: false,
++            last_selection_output: None,
+         };
+         if let Some(path) = con.initial_file.as_ref() {
+             // open initial_file in preview
+@@ -158,6 +168,25 @@ impl App {
+         Ok(app)
+     }
+ 
++    fn sync_selection_output(
++        &mut self,
++        con: &AppContext,
++    ) -> Result<(), ProgramError> {
++        let Some(output_path) = con.launch_args.selection_output.as_deref() else {
++            return Ok(());
++        };
++
++        let selection = self.state().selected_path().map(Path::to_path_buf);
++        if self.selection_output_synced && selection == self.last_selection_output {
++            return Ok(());
++        }
++
++        write_selection_output(output_path, selection.as_deref())?;
++        self.last_selection_output = selection;
++        self.selection_output_synced = true;
++        Ok(())
++    }
++
+     fn panel_ref_to_idx(
+         &self,
+         panel_ref: PanelReference,
+@@ -907,14 +936,18 @@ impl App {
+             })
+             .transpose()?;
+ 
++        self.sync_selection_output(con)?;
++
+         loop {
+             if !self.quitting {
++                self.sync_selection_output(con)?;
+                 self.display_panels(w, &skin, &app_state, con)?;
+                 time!(
+                     Debug,
+                     "pending_tasks",
+                     self.do_pending_tasks(w, &skin, &mut dam, &mut app_state, con)?,
+                 );
++                self.sync_selection_output(con)?;
+             }
+ 
+             // before starting to wait for events, we enable the watcher if needed
+@@ -973,6 +1006,7 @@ impl App {
+                         info!("command after add_event: {:?}", &cmd);
+                         self.apply_command(w, &cmd, &skin.focused, &mut app_state, con)?;
+                     }
++                    self.sync_selection_output(con)?;
+ 
+                     event_source.unblock(self.quitting);
+                 }
+@@ -988,6 +1022,7 @@ impl App {
+                             self.mut_panel().set_input_content(&input);
+                         }
+                         self.apply_command(w, &arg_cmd, &skin.focused, &mut app_state, con)?;
++                        self.sync_selection_output(con)?;
+                         if self.quitting {
+                             return Ok(self.launch_at_end.take());
+                         }
+@@ -1022,3 +1057,22 @@ fn clear_caches() {
+     #[cfg(any(target_os = "macos", target_os = "linux", target_os = "windows"))]
+     crate::filesystems::clear_cache();
+ }
++
++fn write_selection_output(
++    output_path: &Path,
++    selection: Option<&Path>,
++) -> Result<(), ProgramError> {
++    let parent = output_path
++        .parent()
++        .filter(|parent| !parent.as_os_str().is_empty())
++        .unwrap_or_else(|| Path::new("."));
++
++    fs::create_dir_all(parent)?;
++
++    let mut temp = NamedTempFile::new_in(parent)?;
++    if let Some(selection) = selection {
++        writeln!(temp, "{}", selection.to_string_lossy())?;
++    }
++    temp.persist(output_path).map_err(|e| e.error)?;
++    Ok(())
++}
+diff --git a/src/cli/args.rs b/src/cli/args.rs
+index f4a467c..5a30017 100644
+--- a/src/cli/args.rs
++++ b/src/cli/args.rs
+@@ -154,6 +154,10 @@ pub struct Args {
+     #[arg(long, value_name = "verb-output")]
+     pub verb_output: Option<PathBuf>,
+ 
++    /// Optional path to rewrite with the current selection
++    #[arg(long, value_name = "selection-output")]
++    pub selection_output: Option<PathBuf>,
++
+     /// Semicolon separated commands to execute
+     #[arg(short, long, value_name = "cmd")]
+     pub cmd: Option<String>,

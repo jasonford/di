@@ -1,0 +1,117 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+selection_file="${1:?usage: broot-preview-pane <selection-file>}"
+poll_interval="${BROOT_PREVIEW_POLL_INTERVAL:-0.1}"
+max_text_lines="${BROOT_PREVIEW_MAX_TEXT_LINES:-200}"
+max_list_lines="${BROOT_PREVIEW_MAX_LIST_LINES:-200}"
+max_hex_lines="${BROOT_PREVIEW_MAX_HEX_LINES:-80}"
+
+choose_bat() {
+  if command -v batcat >/dev/null 2>&1; then
+    printf '%s\n' batcat
+    return
+  fi
+  if command -v bat >/dev/null 2>&1; then
+    printf '%s\n' bat
+    return
+  fi
+  printf '\n'
+}
+
+clear_screen() {
+  printf '\033[2J\033[H'
+}
+
+render_empty() {
+  cat <<'EOF'
+Preview
+
+No file selected.
+EOF
+}
+
+render_missing() {
+  local path="$1"
+  printf '%s\n\n' "$path"
+  printf 'Path is missing or unreadable.\n'
+}
+
+render_directory() {
+  local path="$1"
+  printf '%s\n\n' "$path"
+  LC_ALL=C ls -la --group-directories-first --color=always -- "$path" | sed -n "1,${max_list_lines}p"
+}
+
+render_text() {
+  local path="$1"
+  local bat_cmd
+  bat_cmd="$(choose_bat)"
+
+  printf '%s\n\n' "$path"
+  if [ -n "$bat_cmd" ]; then
+    "$bat_cmd" --paging=never --style=plain --color=always --line-range="1:${max_text_lines}" -- "$path"
+    return
+  fi
+  sed -n "1,${max_text_lines}p" -- "$path"
+}
+
+render_binary() {
+  local path="$1"
+
+  printf '%s\n\n' "$path"
+  file -Lb -- "$path" 2>/dev/null || true
+  printf '\n'
+  if command -v hexdump >/dev/null 2>&1; then
+    hexdump -C -- "$path" | sed -n "1,${max_hex_lines}p"
+    return
+  fi
+  od -Ax -tx1 -v -N 1024 -- "$path" | sed -n "1,${max_hex_lines}p"
+}
+
+render_preview() {
+  local path="$1"
+  local mime_type
+
+  clear_screen
+
+  if [ -z "$path" ]; then
+    render_empty
+    return
+  fi
+
+  if [ ! -e "$path" ] || [ ! -r "$path" ]; then
+    render_missing "$path"
+    return
+  fi
+
+  if [ -d "$path" ]; then
+    render_directory "$path"
+    return
+  fi
+
+  mime_type="$(file -Lb --mime-type -- "$path" 2>/dev/null || true)"
+  case "$mime_type" in
+    text/*|application/json|application/xml|application/x-empty|application/x-shellscript|application/javascript|application/x-javascript|application/yaml|application/x-yaml)
+      render_text "$path"
+      ;;
+    *)
+      render_binary "$path"
+      ;;
+  esac
+}
+
+last_path="__uninitialized__"
+while true; do
+  current_path=""
+  if [ -f "$selection_file" ]; then
+    IFS= read -r current_path < "$selection_file" || true
+  fi
+
+  if [ "$current_path" != "$last_path" ]; then
+    render_preview "$current_path"
+    last_path="$current_path"
+  fi
+
+  sleep "$poll_interval"
+done
