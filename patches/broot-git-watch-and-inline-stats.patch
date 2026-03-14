@@ -616,7 +616,7 @@ index 80ee41c..78810ba 100644
          }
      }
      /// stop watching the previous path, watch new one.
-@@ -118,7 +124,12 @@ impl Watcher {
+@@ -118,8 +124,28 @@ impl Watcher {
                  return Ok(());
              }
              debug!("add watch {:?}", &path);
@@ -628,5 +628,35 @@ index 80ee41c..78810ba 100644
 +            };
 +            if let Err(e) = notify_watcher.watch(path, recursive_mode) {
                  warn!("error when watching path {:?}: {}", path, e);
++                let keep_partial_recursive_watch = path.is_dir()
++                    && matches!(recursive_mode, RecursiveMode::Recursive)
++                    && matches!(
++                        e.kind,
++                        notify::ErrorKind::Io(ref io_err)
++                            if io_err.kind() == std::io::ErrorKind::PermissionDenied
++                    );
++                if keep_partial_recursive_watch {
++                    warn!(
++                        "keeping partial recursive watch on {:?} despite permission errors in {:?}",
++                        path,
++                        e.paths,
++                    );
++                    continue;
++                }
                  err = Some(e);
                  break;
+             }
+@@ -146,10 +172,10 @@ impl Watcher {
+                             debug!("ignoring metadata change");
+                             return; // useless event
+                         }
++                        // Writes on mounted worktrees may only surface as DataChange::Any.
++                        // Refresh, but keep the log message generic to avoid noisy loops.
+                         EventKind::Modify(ModifyKind::Data(DataChange::Any)) => {
+-                            // might be data append, we prefer to ignore it
+-                            // as some cases (eg log files) are very noisy
+-                            return;
++                            debug!("data change event");
+                         }
+                         EventKind::Access(AccessKind::Close(AccessMode::Write)) => {
+                             debug!("close write event: {we:?}");
