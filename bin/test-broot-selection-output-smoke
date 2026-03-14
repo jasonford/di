@@ -1,0 +1,184 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+SCRIPT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+BROOT_BIN="${BROOT_BIN:-broot}"
+TMUX_SOCKET_NAME="broot-selection-smoke-$$"
+TMUX_SESSION_NAME="broot-selection-smoke"
+TMUX_CONFIG="${TMUX_CONFIG:-$SCRIPT_ROOT/.tmux/tmux.conf}"
+POLL_INTERVAL="${BROOT_SELECTION_OUTPUT_POLL_INTERVAL:-0.25}"
+TIMEOUT_SECONDS="${BROOT_SELECTION_OUTPUT_TIMEOUT:-10}"
+SERVER_NAME="broot-selection-smoke-$$"
+
+tmux_cmd=(tmux -u -L "$TMUX_SOCKET_NAME" -f "$TMUX_CONFIG")
+tmp_dir="$(mktemp -d /tmp/broot-selection-output.XXXXXX)"
+test_repo="$tmp_dir/repo"
+home_dir="$tmp_dir/home"
+xdg_config_home="$tmp_dir/xdg-config"
+selection_output="$tmp_dir/selection.txt"
+last_capture=""
+
+cleanup() {
+  "${tmux_cmd[@]}" kill-session -t "$TMUX_SESSION_NAME" >/dev/null 2>&1 || true
+  "${tmux_cmd[@]}" kill-server >/dev/null 2>&1 || true
+  rm -rf "$tmp_dir"
+}
+trap cleanup EXIT
+
+require_command() {
+  local command_name="$1"
+  if ! command -v "$command_name" >/dev/null 2>&1; then
+    printf 'missing required command: %s\n' "$command_name" >&2
+    exit 1
+  fi
+}
+
+require_executable() {
+  local executable="$1"
+  if [[ "$executable" == */* ]]; then
+    if [ ! -x "$executable" ]; then
+      printf 'missing required executable: %s\n' "$executable" >&2
+      exit 1
+    fi
+  else
+    require_command "$executable"
+  fi
+}
+
+capture_pane() {
+  last_capture="$("${tmux_cmd[@]}" capture-pane -p -t "$TMUX_SESSION_NAME:0.0" 2>/dev/null || true)"
+}
+
+pane_dead() {
+  "${tmux_cmd[@]}" display-message -p -t "$TMUX_SESSION_NAME:0.0" "#{pane_dead}" 2>/dev/null || printf '1\n'
+}
+
+get_root() {
+  HOME="$home_dir" BR_INSTALL=no "$BROOT_BIN" --send "$SERVER_NAME" --get-root
+}
+
+send_key() {
+  "${tmux_cmd[@]}" send-keys -t "$TMUX_SESSION_NAME:0.0" "$1"
+}
+
+read_selection_raw() {
+  local raw=""
+  if [ -f "$selection_output" ]; then
+    IFS= read -r raw < "$selection_output" || true
+  fi
+  printf '%s\n' "$raw"
+}
+
+normalize_selection() {
+  local raw
+  raw="$(read_selection_raw)"
+  if [ -z "$raw" ]; then
+    printf '\n'
+    return 0
+  fi
+  if [[ "$raw" == /* ]]; then
+    realpath -m -- "$raw"
+    return 0
+  fi
+  realpath -m -- "$test_repo/$raw"
+}
+
+wait_for_root() {
+  local expected="$1"
+  local deadline=$((SECONDS + TIMEOUT_SECONDS))
+  local root=""
+  while (( SECONDS < deadline )); do
+    root="$(get_root 2>/dev/null || true)"
+    if [[ "$root" == "$expected" ]]; then
+      return 0
+    fi
+    if [[ "$(pane_dead)" == "1" ]]; then
+      return 1
+    fi
+    sleep "$POLL_INTERVAL"
+  done
+  [[ "$root" == "$expected" ]]
+}
+
+wait_for_selection() {
+  local expected="$1"
+  local deadline=$((SECONDS + TIMEOUT_SECONDS))
+  local actual=""
+  while (( SECONDS < deadline )); do
+    actual="$(normalize_selection)"
+    if [[ "$actual" == "$expected" ]]; then
+      return 0
+    fi
+    if [[ "$(pane_dead)" == "1" ]]; then
+      return 1
+    fi
+    sleep "$POLL_INTERVAL"
+  done
+  [[ "$actual" == "$expected" ]]
+}
+
+fail_with_capture() {
+  local message="$1"
+  local selection_raw
+  selection_raw="$(read_selection_raw)"
+  capture_pane
+  printf '%s\n' "$message" >&2
+  printf 'selection output: %s\n' "${selection_raw:-<empty>}" >&2
+  printf '%s\n' "$last_capture" >&2
+  exit 1
+}
+
+launch_tmux_session() {
+  local launch_cmd
+  printf -v launch_cmd \
+    'TERM=tmux-256color HOME=%q BR_INSTALL=no XDG_CONFIG_HOME=%q %q --listen %q --selection-output %q --confine-root %q' \
+    "$home_dir" \
+    "$xdg_config_home" \
+    "$BROOT_BIN" \
+    "$SERVER_NAME" \
+    "$selection_output" \
+    "$test_repo"
+  "${tmux_cmd[@]}" new-session -d -s "$TMUX_SESSION_NAME" -x 120 -y 20 "$launch_cmd"
+}
+
+init_repo() {
+  mkdir -p "$test_repo/subdir" "$home_dir" "$xdg_config_home"
+  printf 'alpha\n' >"$test_repo/a.txt"
+  printf 'bravo\n' >"$test_repo/subdir/b.txt"
+  : >"$selection_output"
+}
+
+require_command realpath
+require_command tmux
+require_executable "$BROOT_BIN"
+
+init_repo
+launch_tmux_session
+
+if ! wait_for_root "$test_repo"; then
+  fail_with_capture 'broot never reported the startup root'
+fi
+
+expected_a="$(realpath -m -- "$test_repo/a.txt")"
+expected_root="$(realpath -m -- "$test_repo")"
+if ! wait_for_selection "$expected_root"; then
+  fail_with_capture 'selection output never reported the startup root'
+fi
+
+send_key Down
+if ! wait_for_selection "$expected_a"; then
+  fail_with_capture 'selection output did not update when moving to the first file'
+fi
+
+expected_subdir="$(realpath -m -- "$test_repo/subdir")"
+send_key Down
+if ! wait_for_selection "$expected_subdir"; then
+  fail_with_capture 'selection output did not update when moving to a directory'
+fi
+
+send_key Up
+if ! wait_for_selection "$expected_a"; then
+  fail_with_capture 'selection output did not update on a later file selection'
+fi
+
+printf 'broot selection output smoke test passed\n'

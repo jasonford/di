@@ -39,8 +39,8 @@ broot_cmd=(
   HOME="$runtime_dir/home"
   BR_INSTALL=no
   XDG_CONFIG_HOME="$runtime_dir/xdg-config"
-  BROOT_SELECTION_OUTPUT="$selection_output"
   broot
+  --selection-output "$selection_output"
   -g
   --confine-root
   "$WORKDIR"

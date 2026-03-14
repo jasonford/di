@@ -114,12 +114,12 @@ assert_live_regex() {
 launch_tmux_session() {
   local launch_cmd
   printf -v launch_cmd \
-    'TERM=tmux-256color HOME=%q BR_INSTALL=no XDG_CONFIG_HOME=%q BROOT_SELECTION_OUTPUT=%q %q --listen %q -g --confine-root %q --cmd %q' \
+    'TERM=tmux-256color HOME=%q BR_INSTALL=no XDG_CONFIG_HOME=%q %q --listen %q --selection-output %q -g --confine-root %q --cmd %q' \
     "$home_dir" \
     "$xdg_config_home" \
-    "$selection_output" \
     "$BROOT_BIN" \
     "$SERVER_NAME" \
+    "$selection_output" \
     "$WORKTREE_ROOT" \
     ':toggle_watch'
   "${tmux_cmd[@]}" new-session -d -s "$TMUX_SESSION_NAME" -x 120 -y 20 "$launch_cmd"
