@@ -3,19 +3,27 @@ set -euo pipefail
 
 SCRIPT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 BROOT_BIN="${BROOT_BIN:-broot}"
+WORKTREE_ROOT="${BROOT_LIVE_UPDATE_ROOT:-$SCRIPT_ROOT}"
 TMUX_SOCKET_NAME="broot-live-smoke-$$"
 TMUX_SESSION_NAME="broot-live-smoke"
 TMUX_CONFIG="${TMUX_CONFIG:-$SCRIPT_ROOT/.tmux/tmux.conf}"
 POLL_INTERVAL="${BROOT_LIVE_UPDATE_POLL_INTERVAL:-0.25}"
 TIMEOUT_SECONDS="${BROOT_LIVE_UPDATE_TIMEOUT:-10}"
+MANUAL_REFRESH_TIMEOUT="${BROOT_LIVE_UPDATE_MANUAL_REFRESH_TIMEOUT:-2}"
+SERVER_NAME="broot-live-smoke-$$"
 
 tmux_cmd=(tmux -u -L "$TMUX_SOCKET_NAME" -f "$TMUX_CONFIG")
 tmp_dir="$(mktemp -d /tmp/broot-live-update.XXXXXX)"
-test_repo="$tmp_dir/repo"
 home_dir="$tmp_dir/home"
+xdg_config_home="$tmp_dir/xdg-config"
+selection_output="$tmp_dir/selection.txt"
 last_capture=""
+probe_path=""
+probe_name=""
+probe_backup=""
 
 cleanup() {
+  restore_probe
   "${tmux_cmd[@]}" kill-session -t "$TMUX_SESSION_NAME" >/dev/null 2>&1 || true
   "${tmux_cmd[@]}" kill-server >/dev/null 2>&1 || true
   rm -rf "$tmp_dir"
@@ -42,6 +50,12 @@ require_executable() {
   fi
 }
 
+restore_probe() {
+  if [ -n "$probe_path" ] && [ -n "$probe_backup" ] && [ -f "$probe_backup" ]; then
+    cp "$probe_backup" "$probe_path"
+  fi
+}
+
 capture_pane() {
   last_capture="$("${tmux_cmd[@]}" capture-pane -p -t "$TMUX_SESSION_NAME:0.0" 2>/dev/null || true)"
 }
@@ -50,12 +64,13 @@ pane_dead() {
   "${tmux_cmd[@]}" display-message -p -t "$TMUX_SESSION_NAME:0.0" "#{pane_dead}" 2>/dev/null || printf '1\n'
 }
 
-wait_for_text() {
-  local expected="$1"
-  local deadline=$((SECONDS + TIMEOUT_SECONDS))
+wait_for_regex_with_timeout() {
+  local expected_regex="$1"
+  local timeout_seconds="$2"
+  local deadline=$((SECONDS + timeout_seconds))
   while (( SECONDS < deadline )); do
     capture_pane
-    if [[ "$last_capture" == *"$expected"* ]]; then
+    if printf '%s\n' "$last_capture" | grep -Eq "$expected_regex"; then
       return 0
     fi
     if [[ "$(pane_dead)" == "1" ]]; then
@@ -64,48 +79,168 @@ wait_for_text() {
     sleep "$POLL_INTERVAL"
   done
   capture_pane
-  [[ "$last_capture" == *"$expected"* ]]
+  printf '%s\n' "$last_capture" | grep -Eq "$expected_regex"
+}
+
+wait_for_regex() {
+  wait_for_regex_with_timeout "$1" "$TIMEOUT_SECONDS"
+}
+
+send_cmd() {
+  HOME="$home_dir" BR_INSTALL=no "$BROOT_BIN" --send "$SERVER_NAME" --cmd "$1" >/dev/null
+}
+
+fail_with_capture() {
+  local message="$1"
+  capture_pane
+  printf '%s\n' "$message" >&2
+  printf '%s\n' "$last_capture" >&2
+  exit 1
+}
+
+assert_live_regex() {
+  local expected_regex="$1"
+  local failure_message="$2"
+  if wait_for_regex "$expected_regex"; then
+    return 0
+  fi
+  send_cmd ':refresh'
+  if wait_for_regex_with_timeout "$expected_regex" "$MANUAL_REFRESH_TIMEOUT"; then
+    fail_with_capture "$failure_message; it only updated after :refresh"
+  fi
+  fail_with_capture "$failure_message"
 }
 
 launch_tmux_session() {
   local launch_cmd
-  printf -v launch_cmd 'TERM=tmux-256color HOME=%q BR_INSTALL=no %q -g --confine-root %q --cmd %q' \
+  printf -v launch_cmd \
+    'TERM=tmux-256color HOME=%q BR_INSTALL=no XDG_CONFIG_HOME=%q BROOT_SELECTION_OUTPUT=%q %q --listen %q -g --confine-root %q --cmd %q' \
     "$home_dir" \
+    "$xdg_config_home" \
+    "$selection_output" \
     "$BROOT_BIN" \
-    "$test_repo" \
+    "$SERVER_NAME" \
+    "$WORKTREE_ROOT" \
     ':toggle_watch'
   "${tmux_cmd[@]}" new-session -d -s "$TMUX_SESSION_NAME" -x 120 -y 20 "$launch_cmd"
 }
 
-init_repo() {
-  mkdir -p "$test_repo" "$home_dir"
-  git init -q "$test_repo"
-  git -C "$test_repo" config user.name Test
-  git -C "$test_repo" config user.email test@example.com
-  printf 'a\nb\n' >"$test_repo/a.txt"
-  git -C "$test_repo" add a.txt
-  git -C "$test_repo" commit -q -m init
+escape_regex() {
+  printf '%s' "$1" | sed 's/[][(){}.^$+*?|\\/]/\\&/g'
+}
+
+line_for_regex() {
+  local regex="$1"
+  printf '%s\n' "$last_capture" | grep -E "$regex" | head -n1 || true
+}
+
+extract_stats() {
+  local line="$1"
+  if [[ "$line" =~ \+([0-9]+)-([0-9]+) ]]; then
+    printf '%s %s\n' "${BASH_REMATCH[1]}" "${BASH_REMATCH[2]}"
+  else
+    printf '0 0\n'
+  fi
+}
+
+choose_probe_file() {
+  local candidates=(
+    'bin/test-broot-confined-root-smoke'
+    'bin/broot-preview-pane'
+    'bin/test-broot-live-update-smoke'
+  )
+  local candidate=""
+  local fallback=""
+  local fallback_name=""
+  local candidate_name=""
+  local candidate_regex=""
+
+  for candidate in "${candidates[@]}"; do
+    if ! git -C "$WORKTREE_ROOT" ls-files --error-unmatch "$candidate" >/dev/null 2>&1; then
+      continue
+    fi
+    candidate_name="${candidate##*/}"
+    candidate_regex="$(escape_regex "$candidate_name")"
+    if [ -z "$(line_for_regex "$candidate_regex( \\+[0-9]+-[0-9]+)?$")" ]; then
+      continue
+    fi
+    if git -C "$WORKTREE_ROOT" diff --quiet HEAD -- "$candidate"; then
+      probe_name="$candidate_name"
+      probe_path="$WORKTREE_ROOT/$candidate"
+      return 0
+    fi
+    if [ -z "$fallback" ]; then
+      fallback="$candidate"
+      fallback_name="$candidate_name"
+    fi
+  done
+
+  if [ -n "$fallback" ]; then
+    probe_name="$fallback_name"
+    probe_path="$WORKTREE_ROOT/$fallback"
+    return 0
+  fi
+
+  return 1
+}
+
+prepare_probe() {
+  probe_backup="$(mktemp "$tmp_dir/probe.XXXXXX")"
+  cp "$probe_path" "$probe_backup"
+}
+
+mutate_probe() {
+  printf '# live-update-probe %s\n' "$SERVER_NAME" >>"$probe_path"
 }
 
 require_command git
+require_command grep
+require_command sed
 require_command tmux
 require_executable "$BROOT_BIN"
 
-init_repo
+if ! git -C "$WORKTREE_ROOT" rev-parse --show-toplevel >/dev/null 2>&1; then
+  printf 'broot live update smoke test requires a git worktree root: %s\n' "$WORKTREE_ROOT" >&2
+  exit 1
+fi
+
+mkdir -p "$home_dir" "$xdg_config_home"
+: >"$selection_output"
+
 launch_tmux_session
 
-if ! wait_for_text '+0-0'; then
-  printf 'broot pane never reached the initial clean git state\n' >&2
-  printf '%s\n' "$last_capture" >&2
-  exit 1
+workspace_regex="$(escape_regex "$WORKTREE_ROOT")"
+if ! wait_for_regex "^${workspace_regex} .* \\+[0-9]+-[0-9]+$"; then
+  fail_with_capture 'broot pane never reached the initial workspace git summary'
 fi
 
-printf 'c\n' >>"$test_repo/a.txt"
-
-if ! wait_for_text '+1-0'; then
-  printf 'broot pane did not live update after editing a tracked file\n' >&2
-  printf '%s\n' "$last_capture" >&2
-  exit 1
+if [ -z "$(line_for_regex 'bin( \+[0-9]+-[0-9]+)?$')" ]; then
+  fail_with_capture 'broot pane never displayed the bin directory line needed for git diff assertions'
 fi
+
+if ! choose_probe_file; then
+  fail_with_capture 'broot pane never displayed a visible tracked probe file under bin'
+fi
+
+prepare_probe
+
+header_line="$(printf '%s\n' "$last_capture" | sed -n '1p')"
+bin_line="$(line_for_regex 'bin( \+[0-9]+-[0-9]+)?$')"
+probe_name_regex="$(escape_regex "$probe_name")"
+probe_line="$(line_for_regex "$probe_name_regex( \\+[0-9]+-[0-9]+)?$")"
+
+read -r header_insertions header_deletions <<<"$(extract_stats "$header_line")"
+read -r dir_insertions dir_deletions <<<"$(extract_stats "$bin_line")"
+read -r file_insertions file_deletions <<<"$(extract_stats "$probe_line")"
+
+mutate_probe
+
+expected_header_regex="^${workspace_regex} .* \\+$((header_insertions + 1))-${header_deletions}$"
+expected_dir_regex="bin \\+$((dir_insertions + 1))-${dir_deletions}$"
+expected_file_regex="M.*${probe_name_regex} \\+$((file_insertions + 1))-${file_deletions}$"
+
+assert_live_regex "$expected_header_regex" 'broot did not live update the upstream repo git summary for the mounted workspace root'
+assert_live_regex "$expected_dir_regex" 'broot did not live update the patched directory diff stats for the mounted workspace root'
+assert_live_regex "$expected_file_regex" 'broot did not live update the patched file status marker and diff stats for the mounted workspace root'
 
 printf 'broot live update smoke test passed\n'
