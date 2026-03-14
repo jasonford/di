@@ -71,7 +71,7 @@ index 9df8672..bd30087 100644
      }
  
 diff --git a/src/git/status.rs b/src/git/status.rs
-index 0500e46..925074b 100644
+index 0500e46..454deca 100644
 --- a/src/git/status.rs
 +++ b/src/git/status.rs
 @@ -1,8 +1,12 @@
@@ -527,7 +527,7 @@ index 4b57501..dba1a70 100644
 +    }
 +}
 diff --git a/src/watcher.rs b/src/watcher.rs
-index 80ee41c..78810ba 100644
+index 80ee41c..1f948f5 100644
 --- a/src/watcher.rs
 +++ b/src/watcher.rs
 @@ -26,14 +26,10 @@ const DEBOUNCE_MAX_DELAY: std::time::Duration = std::time::Duration::from_millis
@@ -543,13 +543,14 @@ index 80ee41c..78810ba 100644
 -/// - the last event of the sequence is always sent (with a delay of
 -///   at most DEBOUNCE_MAX_DELAY), ensuring we don't miss any change
 +/// notify events are debounced:
-+/// - an isolated event tries to send a refresh immediately
-+/// - successive events after the first one are coalesced
-+/// - after a burst of events, we keep retrying until one final refresh is queued
++/// - refreshes are sent after a quiet period up to DEBOUNCE_MAX_DELAY
++/// - long bursts are coalesced, with at most one queued refresh per DEBOUNCE_MAX_DELAY
++/// - if the sequence channel is busy, the final refresh is retried until it's queued
  pub struct Watcher {
      notify_sender: channel::Sender<()>,
      notify_watcher: Option<RecommendedWatcher>,
-@@ -45,23 +41,31 @@ impl Watcher {
+@@ -44,24 +40,32 @@ impl Watcher {
+     pub fn new(tx_seqs: channel::Sender<Sequence>) -> Self {
          let (notify_sender, notify_receiver) = channel::unbounded();
          thread::spawn(move || {
 -            let mut period_events = 0;
@@ -561,22 +562,22 @@ index 80ee41c..78810ba 100644
                          period_events += 1;
 -                        if period_events > 1 {
 -                            continue;
-+                        if period_events == 1 {
-+                            debug!("received isolated event");
-+                            pending_refresh = !Self::try_send_refresh(&tx_seqs);
++                        if !pending_refresh {
++                            debug!("queueing debounced refresh");
 +                        } else {
-+                            pending_refresh = true;
++                            debug!("coalescing notify event into pending refresh");
                          }
 -                        debug!("sending single event");
 -                        Self::send_refresh(&tx_seqs);
++                        pending_refresh = true;
                      }
                      Err(channel::RecvTimeoutError::Timeout) => {
 -                        if period_events <= 1 {
 -                            continue;
 +                        if pending_refresh {
 +                            debug!(
-+                                "sending aggregation of {} pending events",
-+                                period_events.saturating_sub(1),
++                                "sending refresh after {} queued event(s)",
++                                period_events,
 +                            );
 +                            if Self::try_send_refresh(&tx_seqs) {
 +                                pending_refresh = false;
