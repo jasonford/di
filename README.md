@@ -25,7 +25,7 @@ chmod +x develop
 - `broot` launches in the upper-right pane as a patched source build, starts in watch mode, and has git file status info enabled by default
 - The bundled `broot` patches make watch mode refresh recursively from the current root and show inline git `+/-` counts on changed files and directories
 - The lower-right pane follows broot's current selection and shows a text, directory, or binary preview
-- `broot` is launched through `proot`, with the mounted repo as its effective filesystem root, so parent system paths stay out of view
+- `broot` is launched directly with `--confine-root`, so browsing stays pinned to the mounted repo without `proot`
 
 ## Notes
 
@@ -35,7 +35,7 @@ chmod +x develop
 - The image installs Neovim from the upstream release tarball
 - The image pins `@openai/codex` to `0.114.0`
 - The image builds a patched `broot` from the upstream source tag selected by `BROOT_VERSION=... ./develop`
-- The bundled patch tracks `v1.55.0`; if you change `BROOT_VERSION`, you may need to refresh `patches/broot-selection-output.patch`
+- The bundled broot patches track `v1.55.0`; if you change `BROOT_VERSION`, you may need to refresh the files in `patches/`
 - Override the `broot` pane width with `BROOT_PANE_WIDTH=... ./develop`
 - Override the preview pane height with `BROOT_PREVIEW_PANE_PERCENT=... ./develop`
 - This improves tmux scrolling and redraw behavior, but does not fully eliminate upstream live-resize quirks in Codex itself

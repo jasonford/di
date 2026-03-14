@@ -1,0 +1,751 @@
+diff --git a/src/app/app_context.rs b/src/app/app_context.rs
+index 51ad580..6bcb246 100644
+--- a/src/app/app_context.rs
++++ b/src/app/app_context.rs
+@@ -16,7 +16,11 @@ use {
+             KittyGraphicsDisplay,
+             TransmissionMedium,
+         },
+-        path::SpecialPaths,
++        path::{
++            self,
++            PathAnchor,
++            SpecialPaths,
++        },
+         pattern::SearchModeMap,
+         preview::PreviewTransformers,
+         skin::ExtColorMap,
+@@ -48,6 +52,9 @@ pub struct AppContext {
+     /// The initial tree root
+     pub initial_root: PathBuf,
+ 
++    /// Optional top boundary for broot navigation and previewing
++    pub confined_root: Option<PathBuf>,
++
+     /// The initial file to select and preview
+     pub initial_file: Option<PathBuf>,
+ 
+@@ -210,6 +217,10 @@ impl AppContext {
+         let max_staged_count = config.max_staged_count.unwrap_or(10_000).clamp(10, 100_000);
+         let auto_open_staging_area = config.auto_open_staging_area.unwrap_or(true);
+         let (initial_root, initial_file) = initial_root_file(&launch_args)?;
++        let confine_root = launch_args.confine_root
++            || config_default_args
++                .as_ref()
++                .is_some_and(|args| args.confine_root);
+ 
+         // tree options are built from the default_flags
+         // found in the config file(s) (if any) then overridden
+@@ -244,6 +255,7 @@ impl AppContext {
+ 
+         Ok(Self {
+             is_tty,
++            confined_root: confine_root.then(|| initial_root.clone()),
+             initial_root,
+             initial_file,
+             initial_tree_options,
+@@ -302,6 +314,65 @@ impl AppContext {
+             Mode::Input
+         }
+     }
++
++    pub fn confined_root(&self) -> Option<&Path> {
++        self.confined_root.as_deref()
++    }
++
++    pub fn path_in_confined_root<P: AsRef<Path>>(
++        &self,
++        path: P,
++    ) -> bool {
++        self.confined_root()
++            .map_or(true, |root| path.as_ref().starts_with(root))
++    }
++
++    pub fn confine_normalized_path<P: AsRef<Path>>(
++        &self,
++        path: P,
++    ) -> Result<PathBuf, &'static str> {
++        self.ensure_path_in_confined_root(path::normalize_path(path))
++    }
++
++    pub fn confine_existing_path<P: AsRef<Path>>(
++        &self,
++        path: P,
++    ) -> Result<PathBuf, &'static str> {
++        let path = canonicalize_existing_path(path.as_ref())
++            .unwrap_or_else(|_| path::normalize_path(path));
++        self.ensure_path_in_confined_root(path)
++    }
++
++    pub fn confine_input_path<P: AsRef<Path> + std::fmt::Debug>(
++        &self,
++        base_dir: P,
++        anchor: PathAnchor,
++        input: &str,
++    ) -> Result<PathBuf, &'static str> {
++        let path = path::path_from(base_dir, anchor, input);
++        self.confine_normalized_path(path)
++    }
++
++    pub fn parent_in_confined_root<P: AsRef<Path>>(
++        &self,
++        path: P,
++    ) -> Option<PathBuf> {
++        path.as_ref()
++            .parent()
++            .map(Path::to_path_buf)
++            .filter(|parent| self.path_in_confined_root(parent))
++    }
++
++    fn ensure_path_in_confined_root(
++        &self,
++        path: PathBuf,
++    ) -> Result<PathBuf, &'static str> {
++        if self.path_in_confined_root(&path) {
++            Ok(path)
++        } else {
++            Err("outside confined root")
++        }
++    }
+ }
+ 
+ /// An unsafe implementation of Default, for tests only
+@@ -370,15 +441,25 @@ fn initial_root_file(cli_args: &Args) -> Result<(PathBuf, Option<PathBuf>), Prog
+ 
+ #[cfg(not(windows))]
+ fn canonicalize_root(root: &Path) -> io::Result<PathBuf> {
+-    root.canonicalize()
++    canonicalize_existing_path(root)
+ }
+ 
+ #[cfg(windows)]
+ fn canonicalize_root(root: &Path) -> io::Result<PathBuf> {
+-    Ok(if root.is_relative() {
+-        std::env::current_dir()?.join(root)
++    canonicalize_existing_path(root)
++}
++
++#[cfg(not(windows))]
++fn canonicalize_existing_path(path: &Path) -> io::Result<PathBuf> {
++    path.canonicalize()
++}
++
++#[cfg(windows)]
++fn canonicalize_existing_path(path: &Path) -> io::Result<PathBuf> {
++    Ok(if path.is_relative() {
++        std::env::current_dir()?.join(path)
+     } else {
+-        root.to_path_buf()
++        path.to_path_buf()
+     })
+ }
+ 
+diff --git a/src/browser/browser_state.rs b/src/browser/browser_state.rs
+index 443dee1..df15fcd 100644
+--- a/src/browser/browser_state.rs
++++ b/src/browser/browser_state.rs
+@@ -6,7 +6,7 @@ use {
+         errors::{ProgramError, TreeBuildError},
+         flag::Flag,
+         git,
+-        path::{self, PathAnchor},
++        path::PathAnchor,
+         pattern::*,
+         print,
+         stage::*,
+@@ -50,11 +50,11 @@ impl BrowserState {
+         con: &AppContext,
+         dam: &Dam,
+     ) -> Result<BrowserState, TreeBuildError> {
+-        // on windows, canonicalize the path produces UNC paths, so we don't do it.
+-        // On other platforms, it's a desirable step, mainly because it simplifies the
+-        // paths you'd get for example when focusing a relative symlink containing "..".
+-        #[cfg(not(target_os = "windows"))]
+-        let path = path.canonicalize().unwrap_or(path);
++        let path = con
++            .confine_existing_path(&path)
++            .map_err(|_| TreeBuildError::OutsideConfinedRoot {
++                path: path.to_string_lossy().to_string(),
++            })?;
+ 
+         let pending_task = options
+             .pattern
+@@ -139,10 +139,16 @@ impl BrowserState {
+             if tree.selection == 0 {
+                 // opening the root would be going to where we already are.
+                 // We go up one level instead
+-                if let Some(parent) = target.parent() {
+-                    target = PathBuf::from(parent);
++                if let Some(parent) = con.parent_in_confined_root(&target) {
++                    target = parent;
++                } else {
++                    return Ok(CmdResult::Keep);
+                 }
+             }
++            let target = match con.confine_existing_path(&target) {
++                Ok(target) => target,
++                Err(msg) => return Ok(CmdResult::error(msg)),
++            };
+             let dam = Dam::unlimited();
+             Ok(CmdResult::from_optional_browser_state(
+                 BrowserState::new(
+@@ -160,6 +166,10 @@ impl BrowserState {
+                 in_new_panel,
+             ))
+         } else {
++            let target = match con.confine_existing_path(&target) {
++                Ok(target) => target,
++                Err(msg) => return Ok(CmdResult::error(msg)),
++            };
+             match opener::open(&target) {
+                 Ok(exit_status) => {
+                     info!("open returned with exit_status {exit_status:?}");
+@@ -176,10 +186,10 @@ impl BrowserState {
+         con: &AppContext,
+         in_new_panel: bool,
+     ) -> CmdResult {
+-        match &self.displayed_tree().selected_line().path.parent() {
++        match con.parent_in_confined_root(&self.displayed_tree().selected_line().path) {
+             Some(path) => CmdResult::from_optional_browser_state(
+                 BrowserState::new(
+-                    path.to_path_buf(),
++                    path,
+                     self.displayed_tree().options.without_pattern(),
+                     screen,
+                     con,
+@@ -188,7 +198,7 @@ impl BrowserState {
+                 None,
+                 in_new_panel,
+             ),
+-            None => CmdResult::error("no parent found"),
++            None => CmdResult::Keep,
+         }
+     }
+ }
+@@ -519,17 +529,17 @@ impl PanelState for BrowserState {
+             Internal::root_up => {
+                 let tree = self.displayed_tree();
+                 let root = tree.root();
+-                if let Some(new_root) = root.parent() {
++                if let Some(new_root) = con.parent_in_confined_root(root) {
+                     self.modified(
+                         screen,
+-                        new_root.to_path_buf(),
++                        new_root,
+                         tree.options.clone(),
+                         None,
+                         bang,
+                         con,
+                     )
+                 } else {
+-                    CmdResult::error(format!("{root:?} has no parent"))
++                    CmdResult::Keep
+                 }
+             }
+             Internal::search_again => {
+@@ -575,7 +585,7 @@ impl PanelState for BrowserState {
+                     cc,
+                 );
+                 match path {
+-                    Some(path) => {
++                    Ok(Some(path)) => {
+                         let res = self.displayed_tree_mut().show_path(&path, con);
+                         match res {
+                             Ok(()) => {
+@@ -587,7 +597,8 @@ impl PanelState for BrowserState {
+                             Err(e) => CmdResult::DisplayError(format!("{e}")),
+                         }
+                     }
+-                    None => CmdResult::Keep,
++                    Ok(None) => CmdResult::Keep,
++                    Err(msg) => CmdResult::error(msg),
+                 }
+             }
+             Internal::stage_all_directories => {
+@@ -640,7 +651,14 @@ impl PanelState for BrowserState {
+                     if let Some(input_invocation) = input_invocation {
+                         // we'll go for input arg editing
+                         let path = if let Some(input_arg) = &input_invocation.args {
+-                            path::path_from(self.root(), PathAnchor::Unspecified, input_arg)
++                            match con.confine_input_path(
++                                self.root(),
++                                PathAnchor::Unspecified,
++                                input_arg,
++                            ) {
++                                Ok(path) => path,
++                                Err(msg) => return Ok(CmdResult::error(msg)),
++                            }
+                         } else {
+                             self.root().to_path_buf()
+                         };
+@@ -694,15 +712,15 @@ impl PanelState for BrowserState {
+                 #[cfg(not(any(target_os = "windows", all(unix, not(any(target_os = "ios", target_os = "android"))))))]
+                 CmdResult::DisplayError("trash not supported on this platform".into())
+             }
+-            Internal::up_tree => match self.displayed_tree().root().parent() {
++            Internal::up_tree => match con.parent_in_confined_root(self.displayed_tree().root()) {
+                 Some(path) => internal_focus::on_path(
+-                    path.to_path_buf(),
++                    path,
+                     screen,
+                     self.displayed_tree().options.clone(),
+                     bang,
+                     con,
+                 ),
+-                None => CmdResult::error("no parent found"),
++                None => CmdResult::Keep,
+             },
+             _ => self.on_internal_generic(
+                 w,
+diff --git a/src/cli/args.rs b/src/cli/args.rs
+index 5a30017..d80c573 100644
+--- a/src/cli/args.rs
++++ b/src/cli/args.rs
+@@ -197,6 +197,10 @@ pub struct Args {
+     #[arg(long)]
+     pub get_root: bool,
+ 
++    /// Prevent broot from browsing above the startup root
++    #[arg(long)]
++    pub confine_root: bool,
++
+     /// Write default conf files in given directory
+     #[arg(long, value_name = "path")]
+     pub write_default_conf: Option<PathBuf>,
+diff --git a/src/command/completion.rs b/src/command/completion.rs
+index ba2f52e..d65aaea 100644
+--- a/src/command/completion.rs
++++ b/src/command/completion.rs
+@@ -6,10 +6,7 @@ use {
+             PanelStateType,
+             SelInfo,
+         },
+-        path::{
+-            self,
+-            PathAnchor,
+-        },
++        path::PathAnchor,
+         syntactic::SYNTAX_THEMES,
+         verb::{
+             ArgDef,
+@@ -132,7 +129,10 @@ impl Completions {
+             _ => PathAnchor::Unspecified,
+         };
+         let (_, parent_part, child_part) = regex_captures!(r"^(.*?)([^/]*)$", arg).unwrap();
+-        let parent = path::path_from(path, anchor, parent_part);
++        let parent = match con.confine_input_path(path, anchor, parent_part) {
++            Ok(parent) => parent,
++            Err(_) => return Ok(Vec::new()),
++        };
+         let mut children = Vec::new();
+         if !parent.exists() {
+             debug!(
+diff --git a/src/errors.rs b/src/errors.rs
+index e589722..b4b0941 100644
+--- a/src/errors.rs
++++ b/src/errors.rs
+@@ -72,6 +72,7 @@ custom_error! {pub TreeBuildError
+     //Io {source: io::Error} = "IO Error : {source}",
+     NotADirectory { path: String } = "Not a directory: {path}",
+     NotARootDescendant { path: String } = "Not a descendant of the root: {path}",
++    OutsideConfinedRoot { path: String } = "Outside confined root: {path}",
+     TooManyMatches { max: usize } = "Too many matches (max allowed: {max})",
+     InconsistentData { message:String } = "Inconsistent data: {message}", // maybe refresh ?
+ }
+diff --git a/src/preview/preview_state.rs b/src/preview/preview_state.rs
+index ac091aa..9810c5c 100644
+--- a/src/preview/preview_state.rs
++++ b/src/preview/preview_state.rs
+@@ -22,9 +22,12 @@ use {
+         QueueableCommand,
+         cursor,
+     },
+-    std::path::{
+-        Path,
+-        PathBuf,
++    std::{
++        io,
++        path::{
++            Path,
++            PathBuf,
++        },
+     },
+     termimad::{
+         Area,
+@@ -52,6 +55,28 @@ pub struct PreviewState {
+ }
+ 
+ impl PreviewState {
++    fn preview_for_path(
++        path: &Path,
++        preferred_mode: Option<PreviewMode>,
++        con: &AppContext,
++    ) -> (Option<PreviewTransform>, Preview) {
++        match con.confine_existing_path(path) {
++            Ok(_) => {
++                let transform = con.preview_transformers.transform(path, preferred_mode);
++                let preview_path = transform
++                    .as_ref()
++                    .map(|c| &c.output_path)
++                    .map_or(path, PathBuf::as_path);
++                let preview = Preview::new(preview_path, preferred_mode, con);
++                (transform, preview)
++            }
++            Err(msg) => (
++                None,
++                Preview::IoError(io::Error::new(io::ErrorKind::PermissionDenied, msg)),
++            ),
++        }
++    }
++
+     pub fn new(
+         source_path: PathBuf,
+         pending_pattern: InputPattern,
+@@ -60,14 +85,7 @@ impl PreviewState {
+         con: &AppContext,
+     ) -> PreviewState {
+         let preview_area = Area::uninitialized(); // will be fixed at drawing time
+-        let transform = con
+-            .preview_transformers
+-            .transform(&source_path, preferred_mode);
+-        let preview_path = transform
+-            .as_ref()
+-            .map(|c| &c.output_path)
+-            .unwrap_or(&source_path);
+-        let preview = Preview::new(preview_path, preferred_mode, con);
++        let (transform, preview) = Self::preview_for_path(&source_path, preferred_mode, con);
+         PreviewState {
+             preview_area,
+             dirty: true,
+@@ -236,11 +254,9 @@ impl PanelState for PreviewState {
+         if let Some(fp) = &self.filtered_preview {
+             self.pending_pattern = fp.pattern();
+         };
+-        self.transform = con
+-            .preview_transformers
+-            .transform(&path, self.preferred_mode);
+-        let preview_path = self.transform.as_ref().map_or(&path, |c| &c.output_path);
+-        self.preview = Preview::new(preview_path, self.preferred_mode, con);
++        let (transform, preview) = Self::preview_for_path(&path, self.preferred_mode, con);
++        self.transform = transform;
++        self.preview = preview;
+         if let Some(number) = selected_line_number {
+             self.preview.try_select_line_number(number);
+         }
+diff --git a/src/tree_build/bline.rs b/src/tree_build/bline.rs
+index 3b43b61..2282818 100644
+--- a/src/tree_build/bline.rs
++++ b/src/tree_build/bline.rs
+@@ -1,6 +1,7 @@
+ use {
+     super::bid::BId,
+     crate::{
++        app::AppContext,
+         errors::TreeBuildError,
+         git::IgnoreChain,
+         path::{
+@@ -78,7 +79,10 @@ impl BLine {
+     /// or on the path otherwise.
+     ///
+     /// Assume the can_enter check has already be done.
+-    pub(crate) fn read_dir(&self) -> io::Result<fs::ReadDir> {
++    pub(crate) fn read_dir(
++        &self,
++        con: &AppContext,
++    ) -> io::Result<fs::ReadDir> {
+         if self.file_type.is_symlink() {
+             if let Ok(target) = fs::read_link(&self.path) {
+                 let mut target_path = PathBuf::from(&target);
+@@ -86,14 +90,29 @@ impl BLine {
+                     target_path = self.path.parent().unwrap().join(target_path);
+                     target_path = normalize_path(target_path);
+                 }
++                if con.confine_existing_path(&target_path).is_err() {
++                    return Err(io::Error::new(
++                        io::ErrorKind::PermissionDenied,
++                        "outside confined root",
++                    ));
++                }
+                 return fs::read_dir(&target_path);
+             }
+         }
+-        fs::read_dir(&self.path)
++        let path = con
++            .confine_existing_path(&self.path)
++            .map_err(|msg| io::Error::new(io::ErrorKind::PermissionDenied, msg))?;
++        fs::read_dir(path)
+     }
+     /// tell whether we should list the children of the present line
+-    pub fn can_enter(&self) -> bool {
+-        if self.file_type.is_dir() && self.special_handling.list != Directive::Never {
++    pub fn can_enter(
++        &self,
++        con: &AppContext,
++    ) -> bool {
++        if self.file_type.is_dir()
++            && self.special_handling.list != Directive::Never
++            && con.confine_existing_path(&self.path).is_ok()
++        {
+             return true;
+         }
+         if self.special_handling.list == Directive::Always {
+@@ -106,6 +125,10 @@ impl BLine {
+                     }
+                     if let Ok(target_metadata) = fs::symlink_metadata(&target_path) {
+                         if target_metadata.file_type().is_dir() {
++                            if con.confine_existing_path(&target_path).is_err() {
++                                debug!("not entering link because target escapes confined root");
++                                return false;
++                            }
+                             if self.path.starts_with(target_path) {
+                                 debug!("not entering link because it's a parent"); // lets's not cycle
+                             } else {
+diff --git a/src/tree_build/builder.rs b/src/tree_build/builder.rs
+index dffb51b..031f404 100644
+--- a/src/tree_build/builder.rs
++++ b/src/tree_build/builder.rs
+@@ -247,7 +247,7 @@ impl<'c> TreeBuilder<'c> {
+         bid: BId,
+     ) -> bool {
+         let mut has_child_match = false;
+-        match self.blines[bid].read_dir() {
++        match self.blines[bid].read_dir(self.con) {
+             Ok(entries) => {
+                 let mut children: Vec<BId> = Vec::new();
+                 let child_depth = self.blines[bid].depth + 1;
+@@ -358,7 +358,7 @@ impl<'c> TreeBuilder<'c> {
+                     {
+                         break;
+                     }
+-                    if child.can_enter() {
++                    if child.can_enter(self.con) {
+                         next_level_dirs.push(child_id);
+                     }
+                     out_blines.push(child_id);
+@@ -511,7 +511,7 @@ impl<'c> TreeBuilder<'c> {
+         for id in out_blines {
+             if self.blines[*id].has_match {
+                 // we need to count the children, so we load them
+-                if self.blines[*id].can_enter() && self.blines[*id].children.is_none() {
++                if self.blines[*id].can_enter(self.con) && self.blines[*id].children.is_none() {
+                     self.load_children(*id);
+                 }
+                 if let Ok(tree_line) = self.make_tree_line(*id) {
+diff --git a/src/verb/internal_focus.rs b/src/verb/internal_focus.rs
+index 8567759..c1f05d0 100644
+--- a/src/verb/internal_focus.rs
++++ b/src/verb/internal_focus.rs
+@@ -108,7 +108,7 @@ fn path_from_input(
+     input_arg: Option<&String>,
+     app_state: &AppState,
+     con: &AppContext,
+-) -> PathBuf {
++) -> Result<PathBuf, &'static str> {
+     match (input_arg, internal_exec.arg.as_ref()) {
+         (Some(input_arg), Some(verb_arg)) => {
+             // The verb probably defines some pattern which uses the input.
+@@ -124,14 +124,14 @@ fn path_from_input(
+                 app_state,
+                 Some(input_arg),
+             );
+-            path_builder.path(verb_arg, con)
++            con.confine_normalized_path(path_builder.path(verb_arg, con))
+         }
+         (Some(input_arg), None) => {
+             // the verb defines nothing
+             // The :focus internal execution was triggered from the
+             // input (which must be a kind of alias for :focus)
+             // so we do exactly what the input asks for
+-            path::path_from(base_path, PathAnchor::Unspecified, input_arg)
++            con.confine_input_path(base_path, PathAnchor::Unspecified, input_arg)
+         }
+         (None, Some(verb_arg)) => {
+             // the verb defines the path where to go..
+@@ -147,12 +147,12 @@ fn path_from_input(
+                 app_state,
+                 None,
+             );
+-            path_builder.path(verb_arg, con)
++            con.confine_normalized_path(path_builder.path(verb_arg, con))
+         }
+         (None, None) => {
+             // user only wants to open the selected path, either in the same panel or
+             // in a new one
+-            base_path.to_path_buf()
++            Ok(base_path.to_path_buf())
+         }
+     }
+ }
+@@ -174,7 +174,10 @@ pub fn get_status_markdown(
+         app_state,
+         con,
+     );
+-    format!("Hit *enter* to focus `{}`", path.to_string_lossy())
++    match path {
++        Ok(path) => format!("Hit *enter* to focus `{}`", path.to_string_lossy()),
++        Err(msg) => format!("Can't focus: {msg}"),
++    }
+ }
+ 
+ /// general implementation for verbs based on the :focus internal with optionally
+@@ -200,14 +203,17 @@ pub fn on_internal(
+         .and_then(|invocation| invocation.args.as_ref());
+     match trigger_type {
+         TriggerType::Input(verb) => {
+-            let path = path_from_input(
++            let path = match path_from_input(
+                 verb,
+                 internal_exec,
+                 selected_path,
+                 input_arg,
+                 app_state,
+                 cc.app.con,
+-            );
++            ) {
++                Ok(path) => path,
++                Err(msg) => return CmdResult::error(msg),
++            };
+             on_path(path, screen, tree_options, bang, con)
+         }
+         _ => {
+@@ -222,14 +228,21 @@ pub fn on_internal(
+                     SelInfo::from_path(selected_path),
+                     app_state,
+                 );
+-                let path = path_builder.path(arg, con);
++                let path = match con.confine_normalized_path(path_builder.path(arg, con)) {
++                    Ok(path) => path,
++                    Err(msg) => return CmdResult::error(msg),
++                };
+                 let bang = input_invocation
+                     .map(|inv| inv.bang)
+                     .unwrap_or(internal_exec.bang);
+                 on_path(path, screen, tree_options, bang, con)
+             } else if let Some(input_arg) = input_arg {
+                 let base_dir = selected_path.to_string_lossy();
+-                let path = path::path_from(&*base_dir, PathAnchor::Unspecified, input_arg);
++                let path =
++                    match con.confine_input_path(&*base_dir, PathAnchor::Unspecified, input_arg) {
++                        Ok(path) => path,
++                        Err(msg) => return CmdResult::error(msg),
++                    };
+                 if bang {
+                     // Unsure this special behavior is really needed. It was based
+                     // on the assumption that the user wanted to edit an argument
+diff --git a/src/verb/internal_path.rs b/src/verb/internal_path.rs
+index 5b085e0..fac413c 100644
+--- a/src/verb/internal_path.rs
++++ b/src/verb/internal_path.rs
+@@ -7,10 +7,7 @@ use {
+         browser::BrowserState,
+         command::TriggerType,
+         display::Screen,
+-        path::{
+-            self,
+-            PathAnchor,
+-        },
++        path::PathAnchor,
+         tree::Tree,
+     },
+     std::path::{
+@@ -27,7 +24,7 @@ pub fn determine_path(
+     tree: &Tree,
+     app_state: &AppState,
+     cc: &CmdContext,
+-) -> Option<PathBuf> {
++) -> Result<Option<PathBuf>, &'static str> {
+     info!(
+         "internal_path::determine_path internal_exec={:?} input_invocation={:?} trygger_type={:?}",
+         internal_exec, input_invocation, trigger_type,
+@@ -45,7 +42,7 @@ pub fn determine_path(
+                 app_state,
+                 cc.app.con,
+             );
+-            Some(path)
++            path.map(Some)
+         }
+         _ => {
+             // the :select internal was triggered by a key
+@@ -56,11 +53,13 @@ pub fn determine_path(
+                 // The given path may be relative hence the need for the
+                 // state's selection
+                 let path =
+-                    path::path_from(&tree.selected_line().path, PathAnchor::Unspecified, arg);
+-                Some(path)
++                    cc.app
++                        .con
++                        .confine_input_path(&tree.selected_line().path, PathAnchor::Unspecified, arg)?;
++                Ok(Some(path))
+             } else {
+                 // there's nothing really to do here
+-                None
++                Ok(None)
+             }
+         }
+     }
+@@ -78,7 +77,7 @@ fn path_from_input(
+     input_arg: Option<&String>,
+     app_state: &AppState,
+     con: &AppContext,
+-) -> PathBuf {
++) -> Result<PathBuf, &'static str> {
+     match (input_arg, internal_exec.arg.as_ref()) {
+         (Some(input_arg), Some(verb_arg)) => {
+             // The verb probably defines some pattern which uses the input.
+@@ -94,14 +93,14 @@ fn path_from_input(
+                 app_state,
+                 Some(input_arg),
+             );
+-            path_builder.path(verb_arg, con)
++            con.confine_normalized_path(path_builder.path(verb_arg, con))
+         }
+         (Some(input_arg), None) => {
+             // the verb defines nothing
+             // The :select internal execution was triggered from the
+             // input (which must be a kind of alias for :select)
+             // so we do exactly what the input asks for
+-            path::path_from(base_path, PathAnchor::Unspecified, input_arg)
++            con.confine_input_path(base_path, PathAnchor::Unspecified, input_arg)
+         }
+         (None, Some(verb_arg)) => {
+             // the verb defines the path where to go..
+@@ -111,12 +110,12 @@ fn path_from_input(
+             // The given path may be relative hence the need for the
+             // state's selection
+             // (we assume a check before ensured it doesn't need an input)
+-            path::path_from(base_path, PathAnchor::Unspecified, verb_arg)
++            con.confine_input_path(base_path, PathAnchor::Unspecified, verb_arg)
+         }
+         (None, None) => {
+             // This doesn't really make sense: we're selecting the currently
+             // selected path
+-            base_path.to_path_buf()
++            Ok(base_path.to_path_buf())
+         }
+     }
+ }
+diff --git a/src/verb/internal_select.rs b/src/verb/internal_select.rs
+index 4071277..b262b57 100644
+--- a/src/verb/internal_select.rs
++++ b/src/verb/internal_select.rs
+@@ -22,15 +22,17 @@ pub fn on_internal(
+     app_state: &AppState,
+     cc: &CmdContext,
+ ) -> CmdResult {
+-    let Some(path) = internal_path::determine_path(
++    let path = match internal_path::determine_path(
+         internal_exec,
+         input_invocation,
+         trigger_type,
+         tree,
+         app_state,
+         cc,
+-    ) else {
+-        return CmdResult::Keep;
++    ) {
++        Ok(Some(path)) => path,
++        Ok(None) => return CmdResult::Keep,
++        Err(msg) => return CmdResult::error(msg),
+     };
+     let screen = cc.app.screen;
+     let bang = input_invocation

@@ -36,9 +36,13 @@ fi
 
 broot_cmd=(
   env
+  HOME="$runtime_dir/home"
   BR_INSTALL=no
+  XDG_CONFIG_HOME="$runtime_dir/xdg-config"
   BROOT_SELECTION_OUTPUT="$selection_output"
-  "$SCRIPT_ROOT/bin/broot-in-proot"
+  broot
+  -g
+  --confine-root
   "$WORKDIR"
   --cmd ":toggle_watch"
 )
@@ -51,6 +55,7 @@ preview_cmd=(
 
 if ! "${tmux_cmd[@]}" has-session -t "$SESSION_NAME" 2>/dev/null; then
   mkdir -p "$runtime_dir"
+  mkdir -p "$runtime_dir/home" "$runtime_dir/xdg-config"
   : > "$selection_output"
   "${tmux_cmd[@]}" new-session -d -s "$SESSION_NAME" -c "$WORKDIR" "${codex_cmd[@]}"
   "${tmux_cmd[@]}" rename-window -t "$SESSION_NAME:0" workspace

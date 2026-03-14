@@ -3,15 +3,17 @@ set -euo pipefail
 
 SCRIPT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 BROOT_BIN="${BROOT_BIN:-broot}"
-TMUX_SOCKET_NAME="broot-live-smoke-$$"
-TMUX_SESSION_NAME="broot-live-smoke"
+TMUX_SOCKET_NAME="broot-confined-smoke-$$"
+TMUX_SESSION_NAME="broot-confined-smoke"
 TMUX_CONFIG="${TMUX_CONFIG:-$SCRIPT_ROOT/.tmux/tmux.conf}"
-POLL_INTERVAL="${BROOT_LIVE_UPDATE_POLL_INTERVAL:-0.25}"
-TIMEOUT_SECONDS="${BROOT_LIVE_UPDATE_TIMEOUT:-10}"
+POLL_INTERVAL="${BROOT_CONFINED_ROOT_POLL_INTERVAL:-0.25}"
+TIMEOUT_SECONDS="${BROOT_CONFINED_ROOT_TIMEOUT:-10}"
+SERVER_NAME="broot-confined-smoke-$$"
 
 tmux_cmd=(tmux -u -L "$TMUX_SOCKET_NAME" -f "$TMUX_CONFIG")
-tmp_dir="$(mktemp -d /tmp/broot-live-update.XXXXXX)"
+tmp_dir="$(mktemp -d /tmp/broot-confined-root.XXXXXX)"
 test_repo="$tmp_dir/repo"
+outside_dir="$tmp_dir/outside"
 home_dir="$tmp_dir/home"
 last_capture=""
 
@@ -50,12 +52,21 @@ pane_dead() {
   "${tmux_cmd[@]}" display-message -p -t "$TMUX_SESSION_NAME:0.0" "#{pane_dead}" 2>/dev/null || printf '1\n'
 }
 
-wait_for_text() {
+get_root() {
+  HOME="$home_dir" BR_INSTALL=no "$BROOT_BIN" --send "$SERVER_NAME" --get-root
+}
+
+send_cmd() {
+  HOME="$home_dir" BR_INSTALL=no "$BROOT_BIN" --send "$SERVER_NAME" --cmd "$1" >/dev/null
+}
+
+wait_for_root() {
   local expected="$1"
   local deadline=$((SECONDS + TIMEOUT_SECONDS))
+  local root=""
   while (( SECONDS < deadline )); do
-    capture_pane
-    if [[ "$last_capture" == *"$expected"* ]]; then
+    root="$(get_root 2>/dev/null || true)"
+    if [[ "$root" == "$expected" ]]; then
       return 0
     fi
     if [[ "$(pane_dead)" == "1" ]]; then
@@ -63,28 +74,29 @@ wait_for_text() {
     fi
     sleep "$POLL_INTERVAL"
   done
-  capture_pane
-  [[ "$last_capture" == *"$expected"* ]]
+  [[ "$root" == "$expected" ]]
 }
 
 launch_tmux_session() {
   local launch_cmd
-  printf -v launch_cmd 'TERM=tmux-256color HOME=%q BR_INSTALL=no %q -g --confine-root %q --cmd %q' \
+  printf -v launch_cmd 'TERM=tmux-256color HOME=%q BR_INSTALL=no %q --listen %q --confine-root %q' \
     "$home_dir" \
     "$BROOT_BIN" \
-    "$test_repo" \
-    ':toggle_watch'
+    "$SERVER_NAME" \
+    "$test_repo"
   "${tmux_cmd[@]}" new-session -d -s "$TMUX_SESSION_NAME" -x 120 -y 20 "$launch_cmd"
 }
 
 init_repo() {
-  mkdir -p "$test_repo" "$home_dir"
+  mkdir -p "$test_repo" "$outside_dir" "$home_dir"
   git init -q "$test_repo"
   git -C "$test_repo" config user.name Test
   git -C "$test_repo" config user.email test@example.com
-  printf 'a\nb\n' >"$test_repo/a.txt"
+  printf 'tracked\n' >"$test_repo/a.txt"
   git -C "$test_repo" add a.txt
   git -C "$test_repo" commit -q -m init
+  mkdir -p "$outside_dir/subdir"
+  ln -s "$outside_dir" "$test_repo/escape-dir"
 }
 
 require_command git
@@ -94,18 +106,43 @@ require_executable "$BROOT_BIN"
 init_repo
 launch_tmux_session
 
-if ! wait_for_text '+0-0'; then
-  printf 'broot pane never reached the initial clean git state\n' >&2
+if ! wait_for_root "$test_repo"; then
+  capture_pane
+  printf 'broot never reported the confined root\n' >&2
   printf '%s\n' "$last_capture" >&2
   exit 1
 fi
 
-printf 'c\n' >>"$test_repo/a.txt"
-
-if ! wait_for_text '+1-0'; then
-  printf 'broot pane did not live update after editing a tracked file\n' >&2
+send_cmd ':root_up'
+if ! wait_for_root "$test_repo"; then
+  capture_pane
+  printf 'root_up escaped the confined root\n' >&2
   printf '%s\n' "$last_capture" >&2
   exit 1
 fi
 
-printf 'broot live update smoke test passed\n'
+send_cmd ':focus ..'
+if ! wait_for_root "$test_repo"; then
+  capture_pane
+  printf 'focus .. escaped the confined root\n' >&2
+  printf '%s\n' "$last_capture" >&2
+  exit 1
+fi
+
+send_cmd ":focus $outside_dir"
+if ! wait_for_root "$test_repo"; then
+  capture_pane
+  printf 'focus on an absolute outside path escaped the confined root\n' >&2
+  printf '%s\n' "$last_capture" >&2
+  exit 1
+fi
+
+send_cmd ':focus escape-dir'
+if ! wait_for_root "$test_repo"; then
+  capture_pane
+  printf 'focus on an outside symlink escaped the confined root\n' >&2
+  printf '%s\n' "$last_capture" >&2
+  exit 1
+fi
+
+printf 'broot confined root smoke test passed\n'
