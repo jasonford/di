@@ -8,11 +8,19 @@ MODEL="${MODEL:-gpt-5.4}"
 TMUX_CONFIG="${TMUX_CONFIG:-$SCRIPT_ROOT/.tmux/tmux.conf}"
 BROOT_PANE_WIDTH="${BROOT_PANE_WIDTH:-45}"
 BROOT_PREVIEW_PANE_PERCENT="${BROOT_PREVIEW_PANE_PERCENT:-35}"
+BROOT_PREVIEW_DIFF_MODE="${BROOT_PREVIEW_DIFF_MODE:-auto}"
 CODEX_NO_ALT_SCREEN="${CODEX_NO_ALT_SCREEN:-1}"
 
 if ! [[ "$BROOT_PREVIEW_PANE_PERCENT" =~ ^[0-9]+$ ]] || [ "$BROOT_PREVIEW_PANE_PERCENT" -le 0 ] || [ "$BROOT_PREVIEW_PANE_PERCENT" -ge 100 ]; then
   BROOT_PREVIEW_PANE_PERCENT=35
 fi
+
+case "$BROOT_PREVIEW_DIFF_MODE" in
+  auto|unstaged|staged) ;;
+  *)
+    BROOT_PREVIEW_DIFF_MODE=auto
+    ;;
+esac
 
 session_slug="$(printf '%s' "$SESSION_NAME" | tr -c 'A-Za-z0-9._-' '_')"
 runtime_dir="/tmp/codex-broot-$session_slug"
@@ -50,7 +58,9 @@ broot_cmd=(
 preview_cmd=(
   bash
   "$SCRIPT_ROOT/bin/broot-preview-pane"
-  "$selection_output"
+  --watch-selection "$selection_output"
+  --base-dir "$WORKDIR"
+  --diff-mode "$BROOT_PREVIEW_DIFF_MODE"
 )
 
 if ! "${tmux_cmd[@]}" has-session -t "$SESSION_NAME" 2>/dev/null; then
@@ -60,13 +70,15 @@ if ! "${tmux_cmd[@]}" has-session -t "$SESSION_NAME" 2>/dev/null; then
   "${tmux_cmd[@]}" new-session -d -s "$SESSION_NAME" -c "$WORKDIR" "${codex_cmd[@]}"
   "${tmux_cmd[@]}" rename-window -t "$SESSION_NAME:0" workspace
   "${tmux_cmd[@]}" set-option -t "$SESSION_NAME" remain-on-exit on
+  "${tmux_cmd[@]}" set-option -t "$SESSION_NAME" @broot_runtime_dir "$runtime_dir"
+  "${tmux_cmd[@]}" set-option -t "$SESSION_NAME" @broot_workspace_dir "$WORKDIR"
+  "${tmux_cmd[@]}" set-option -t "$SESSION_NAME" @broot_preview_diff_mode "$BROOT_PREVIEW_DIFF_MODE"
+  "${tmux_cmd[@]}" set-option -t "$SESSION_NAME" @broot_selection_output "$selection_output"
   broot_pane="$("${tmux_cmd[@]}" split-window -h -P -F '#{pane_id}' -t "$SESSION_NAME:workspace.0" -c "$WORKDIR" "${broot_cmd[@]}")"
   "${tmux_cmd[@]}" resize-pane -t "$broot_pane" -x "$BROOT_PANE_WIDTH" 2>/dev/null || true
   preview_pane="$("${tmux_cmd[@]}" split-window -v -P -F '#{pane_id}' -p "$BROOT_PREVIEW_PANE_PERCENT" -t "$broot_pane" -c "$WORKDIR" "${preview_cmd[@]}")"
   "${tmux_cmd[@]}" set-option -t "$SESSION_NAME" @broot_pane_id "$broot_pane"
   "${tmux_cmd[@]}" set-option -t "$SESSION_NAME" @broot_preview_pane_id "$preview_pane"
-  "${tmux_cmd[@]}" set-option -t "$SESSION_NAME" @broot_runtime_dir "$runtime_dir"
-  "${tmux_cmd[@]}" set-option -t "$SESSION_NAME" @broot_selection_output "$selection_output"
   "${tmux_cmd[@]}" select-pane -t "$SESSION_NAME:workspace.0"
 fi
 

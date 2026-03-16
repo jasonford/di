@@ -24,7 +24,7 @@ chmod +x develop
 - Running `vim` in the container opens the same vanilla Neovim binary
 - `broot` launches in the upper-right pane as a patched source build, starts in watch mode, and has git file status info enabled by default
 - The bundled `broot` patches make watch mode refresh recursively from the current root and show inline git `+/-` counts on changed files and directories
-- The lower-right pane follows broot's current selection and shows a text, directory, or binary preview
+- The lower-right pane follows broot's current selection and shows unified git diffs for changed tracked text files, highlighted text previews for normal files, and safe fallbacks for directories, binaries, and large files
 - `broot` is launched directly with `--confine-root`, so browsing stays pinned to the mounted repo without `proot`
 
 ## Notes
@@ -38,5 +38,8 @@ chmod +x develop
 - The bundled broot patches track `v1.55.0`; if you change `BROOT_VERSION`, you may need to refresh the files in `patches/`
 - Override the `broot` pane width with `BROOT_PANE_WIDTH=... ./develop`
 - Override the preview pane height with `BROOT_PREVIEW_PANE_PERCENT=... ./develop`
+- Override the initial preview diff mode with `BROOT_PREVIEW_DIFF_MODE=auto|unstaged|staged ./develop`
+- Switch preview diff mode live with `tmux set -t codex @broot_preview_diff_mode staged`, `unstaged`, or `auto`
+- `staged` and `unstaged` act as preferences; if the selected tracked file only has changes in the other scope, the preview still renders that diff instead of falling back to a plain text preview
 - This improves tmux scrolling and redraw behavior, but does not fully eliminate upstream live-resize quirks in Codex itself
 - Docker cache avoids redoing the expensive build layers when unchanged

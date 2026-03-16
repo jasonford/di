@@ -24,9 +24,11 @@ FROM node:22-bookworm-slim
 
 ARG CODEX_VERSION=0.114.0
 ARG NVIM_VERSION=v0.11.5
+ARG GIT_DELTA_VERSION=0.18.2
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     bash \
+    bat \
     ca-certificates \
     curl \
     dpkg \
@@ -40,8 +42,19 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     ripgrep \
     tar \
     tmux \
+    wget \
     xclip \
   && rm -rf /var/lib/apt/lists/*
+
+RUN arch="$(dpkg --print-architecture)" \
+  && case "$arch" in \
+       amd64|arm64) delta_arch="$arch" ;; \
+       *) echo "Unsupported architecture for git-delta: $arch" >&2; exit 1 ;; \
+     esac \
+  && wget -nv "https://github.com/dandavison/delta/releases/download/${GIT_DELTA_VERSION}/git-delta_${GIT_DELTA_VERSION}_${delta_arch}.deb" \
+      -O /tmp/git-delta.deb \
+  && dpkg -i /tmp/git-delta.deb \
+  && rm -f /tmp/git-delta.deb
 
 RUN arch="$(dpkg --print-architecture)" \
   && case "$arch" in \

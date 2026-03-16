@@ -1,0 +1,229 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+SCRIPT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+TMUX_CONFIG="${TMUX_CONFIG:-$SCRIPT_ROOT/.tmux/tmux.conf}"
+TMUX_SOCKET_NAME="broot-preview-smoke-$$"
+TMUX_SESSION_NAME="broot-preview-smoke"
+tmux_cmd=(tmux -u -L "$TMUX_SOCKET_NAME" -f "$TMUX_CONFIG")
+
+tmp_dir="$(mktemp -d /tmp/broot-preview.XXXXXX)"
+repo_root="$tmp_dir/repo"
+selection_file="$tmp_dir/selection.txt"
+preview_pane=""
+last_capture=""
+
+cleanup() {
+  "${tmux_cmd[@]}" kill-session -t "$TMUX_SESSION_NAME" >/dev/null 2>&1 || true
+  "${tmux_cmd[@]}" kill-server >/dev/null 2>&1 || true
+  rm -rf "$tmp_dir"
+}
+trap cleanup EXIT
+
+require_command() {
+  if ! command -v "$1" >/dev/null 2>&1; then
+    printf 'missing required command: %s\n' "$1" >&2
+    exit 1
+  fi
+}
+
+capture_view() {
+  last_capture="$("${tmux_cmd[@]}" capture-pane -p -t "$preview_pane" 2>/dev/null || true)"
+}
+
+capture_history() {
+  last_capture="$("${tmux_cmd[@]}" capture-pane -p -t "$preview_pane" -S -200 2>/dev/null || true)"
+}
+
+pane_dead() {
+  "${tmux_cmd[@]}" display-message -p -t "$preview_pane" "#{pane_dead}" 2>/dev/null || printf '1\n'
+}
+
+wait_for_regex() {
+  local expected_regex="$1"
+  local timeout_seconds="${2:-8}"
+  local deadline=$((SECONDS + timeout_seconds))
+
+  while (( SECONDS < deadline )); do
+    capture_view
+    if printf '%s\n' "$last_capture" | grep -Eq "$expected_regex"; then
+      return 0
+    fi
+    if [[ "$(pane_dead)" == "1" ]]; then
+      return 1
+    fi
+    sleep 0.1
+  done
+
+  capture_view
+  printf '%s\n' "$last_capture" | grep -Eq "$expected_regex"
+}
+
+wait_for_history_regex() {
+  local expected_regex="$1"
+  local timeout_seconds="${2:-8}"
+  local deadline=$((SECONDS + timeout_seconds))
+
+  while (( SECONDS < deadline )); do
+    capture_history
+    if printf '%s\n' "$last_capture" | grep -Eq "$expected_regex"; then
+      return 0
+    fi
+    if [[ "$(pane_dead)" == "1" ]]; then
+      return 1
+    fi
+    sleep 0.1
+  done
+
+  capture_history
+  printf '%s\n' "$last_capture" | grep -Eq "$expected_regex"
+}
+
+fail_with_capture() {
+  local message="$1"
+  capture_history
+  printf '%s\n' "$message" >&2
+  printf '%s\n' "$last_capture" >&2
+  exit 1
+}
+
+set_selection() {
+  printf '%s\n' "$1" >"$selection_file"
+}
+
+init_repo() {
+  mkdir -p "$repo_root/sub dir"
+  git -C "$repo_root" init -q
+  git -C "$repo_root" config user.email test@example.com
+  git -C "$repo_root" config user.name "Preview Smoke"
+
+  cat <<'EOF' >"$repo_root/clean.py"
+print("clean preview")
+EOF
+
+  cat <<'EOF' >"$repo_root/tracked.txt"
+alpha
+beta
+EOF
+
+  cat <<'EOF' >"$repo_root/staged-only.txt"
+left
+right
+EOF
+
+  cat <<'EOF' >"$repo_root/sub dir/space name.txt"
+inside directory preview
+EOF
+
+  printf '\x00\x01\x02\x03' >"$repo_root/binary.bin"
+
+  git -C "$repo_root" add clean.py tracked.txt staged-only.txt "sub dir/space name.txt" binary.bin
+  git -C "$repo_root" commit -qm 'initial preview fixture'
+
+  cat <<'EOF' >"$repo_root/tracked.txt"
+alpha
+changed
+EOF
+
+  cat <<'EOF' >"$repo_root/untracked.md"
+untracked preview
+EOF
+
+  cat <<'EOF' >"$repo_root/staged-only.txt"
+left
+staged change
+EOF
+  git -C "$repo_root" add staged-only.txt
+
+  printf '\x00\x01\x02\x03\x04' >"$repo_root/binary.bin"
+  : >"$selection_file"
+}
+
+launch_tmux() {
+  "${tmux_cmd[@]}" new-session -d -s "$TMUX_SESSION_NAME" -x 120 -y 20 'bash'
+  "${tmux_cmd[@]}" set-option -t "$TMUX_SESSION_NAME" @broot_preview_diff_mode auto
+  preview_pane="$("${tmux_cmd[@]}" split-window -d -P -F '#{pane_id}' -p 40 -t "$TMUX_SESSION_NAME:0.0" -c "$repo_root" \
+    bash "$SCRIPT_ROOT/bin/broot-preview-pane" --watch-selection "$selection_file" --base-dir "$repo_root" --poll-interval 0.02)"
+}
+
+require_command git
+require_command grep
+require_command tmux
+
+init_repo
+launch_tmux
+
+if ! wait_for_regex 'No selection'; then
+  fail_with_capture 'preview pane never rendered the empty state'
+fi
+
+set_selection "$repo_root/sub dir/space name.txt"
+if ! wait_for_regex 'space name\.txt'; then
+  fail_with_capture 'preview never rendered a clean text file with spaces in the path'
+fi
+if ! wait_for_regex 'inside directory preview'; then
+  fail_with_capture 'clean text preview missing file body'
+fi
+
+set_selection "$repo_root/tracked.txt"
+if ! wait_for_history_regex 'Git diff • unstaged'; then
+  fail_with_capture 'modified tracked file did not render a diff view'
+fi
+if ! wait_for_regex 'changed'; then
+  fail_with_capture 'modified tracked diff did not include changed content'
+fi
+
+"${tmux_cmd[@]}" set-option -t "$TMUX_SESSION_NAME" @broot_preview_diff_mode staged
+set_selection "$repo_root/tracked.txt"
+if ! wait_for_history_regex 'Git diff • unstaged'; then
+  fail_with_capture 'tracked file with only unstaged changes fell back to plain text in staged mode'
+fi
+
+"${tmux_cmd[@]}" set-option -t "$TMUX_SESSION_NAME" @broot_preview_diff_mode unstaged
+set_selection "$repo_root/staged-only.txt"
+if ! wait_for_history_regex 'Git diff • staged'; then
+  fail_with_capture 'tracked file with only staged changes fell back to plain text in unstaged mode'
+fi
+if ! wait_for_regex 'staged change'; then
+  fail_with_capture 'staged-only diff did not include changed content'
+fi
+
+"${tmux_cmd[@]}" set-option -t "$TMUX_SESSION_NAME" @broot_preview_diff_mode auto
+
+set_selection "$repo_root/untracked.md"
+if ! wait_for_regex 'untracked\.md'; then
+  fail_with_capture 'untracked file preview never rendered'
+fi
+if ! wait_for_regex 'untracked preview'; then
+  fail_with_capture 'untracked file preview missing file body'
+fi
+capture_history
+if printf '%s\n' "$last_capture" | grep -Eq 'tracked\.txt|changed'; then
+  fail_with_capture 'preview scrollback retained an older preview instead of only the current selection'
+fi
+
+set_selection "$repo_root/binary.bin"
+if ! wait_for_regex 'Hex Preview'; then
+  fail_with_capture 'binary preview never rendered a hex fallback'
+fi
+
+set_selection "$repo_root/sub dir"
+if ! wait_for_regex 'Directory'; then
+  fail_with_capture 'directory preview never rendered a directory summary'
+fi
+if ! wait_for_regex 'space name\.txt'; then
+  fail_with_capture 'directory preview missing child entry'
+fi
+
+set_selection "$repo_root/clean.py"
+sleep 0.02
+set_selection "$repo_root/tracked.txt"
+if ! wait_for_history_regex 'tracked\.txt'; then
+  fail_with_capture 'rapid selection changes did not settle on the newest file'
+fi
+capture_history
+if printf '%s\n' "$last_capture" | grep -Eq 'clean\.py|clean preview'; then
+  fail_with_capture 'rapid selection changes left the previous preview in pane history'
+fi
+
+printf 'broot preview pane smoke test passed\n'

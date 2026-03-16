@@ -1,11 +1,36 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-selection_file="${1:?usage: broot-preview-pane <selection-file>}"
-poll_interval="${BROOT_PREVIEW_POLL_INTERVAL:-0.1}"
-max_text_lines="${BROOT_PREVIEW_MAX_TEXT_LINES:-200}"
-max_list_lines="${BROOT_PREVIEW_MAX_LIST_LINES:-200}"
+selection_file=""
+selected_path=""
+base_dir="${PWD}"
+watch_mode=0
+
+poll_interval="${BROOT_PREVIEW_POLL_INTERVAL:-0.05}"
+diff_mode="${BROOT_PREVIEW_DIFF_MODE:-auto}"
+max_text_lines="${BROOT_PREVIEW_MAX_TEXT_LINES:-220}"
+max_diff_lines="${BROOT_PREVIEW_MAX_DIFF_LINES:-220}"
+max_list_lines="${BROOT_PREVIEW_MAX_LIST_LINES:-160}"
 max_hex_lines="${BROOT_PREVIEW_MAX_HEX_LINES:-80}"
+max_git_status_lines="${BROOT_PREVIEW_MAX_GIT_STATUS_LINES:-80}"
+huge_file_bytes="${BROOT_PREVIEW_HUGE_FILE_BYTES:-2097152}"
+max_hex_bytes="${BROOT_PREVIEW_MAX_HEX_BYTES:-2048}"
+
+usage() {
+  cat <<'EOF'
+usage:
+  broot-preview-pane <selection-file> [options]
+  broot-preview-pane --watch-selection <selection-file> [options]
+  broot-preview-pane --path <selected-path> [options]
+
+options:
+  --watch-selection <file>   poll a selection file and render updates in-place
+  --path <selected-path>     render a single path and exit
+  --base-dir <dir>           resolve relative selected paths against this directory
+  --diff-mode <auto|unstaged|staged>
+  --poll-interval <seconds>  selection polling interval in watch mode
+EOF
+}
 
 choose_bat() {
   if command -v batcat >/dev/null 2>&1; then
@@ -19,99 +44,574 @@ choose_bat() {
   printf '\n'
 }
 
-clear_screen() {
-  printf '\033[2J\033[H'
+choose_delta() {
+  if command -v delta >/dev/null 2>&1; then
+    printf '%s\n' delta
+    return
+  fi
+  printf '\n'
+}
+
+pane_width() {
+  local width=""
+
+  if [ -n "${TMUX_PANE:-}" ] && command -v tmux >/dev/null 2>&1; then
+    width="$(tmux display-message -p -t "$TMUX_PANE" '#{pane_width}' 2>/dev/null || true)"
+    if [[ "$width" =~ ^[0-9]+$ ]] && [ "$width" -gt 20 ]; then
+      printf '%s\n' "$width"
+      return
+    fi
+  fi
+
+  if [[ "${COLUMNS:-}" =~ ^[0-9]+$ ]] && [ "${COLUMNS:-0}" -gt 20 ]; then
+    printf '%s\n' "$COLUMNS"
+    return
+  fi
+
+  printf '120\n'
+}
+
+current_diff_mode() {
+  local session_mode=""
+
+  if [ -n "${TMUX_PANE:-}" ] && command -v tmux >/dev/null 2>&1; then
+    session_mode="$(tmux display-message -p -t "$TMUX_PANE" '#{@broot_preview_diff_mode}' 2>/dev/null || true)"
+    case "$session_mode" in
+      auto|unstaged|staged)
+        printf '%s\n' "$session_mode"
+        return
+        ;;
+    esac
+  fi
+
+  printf '%s\n' "$diff_mode"
+}
+
+reset_pane_state() {
+  if [ -n "${TMUX_PANE:-}" ] && command -v tmux >/dev/null 2>&1; then
+    tmux clear-history -t "$TMUX_PANE" >/dev/null 2>&1 || true
+    printf '\033[H\033[2J\033[3J'
+    return
+  fi
+
+  printf '\033[H\033[2J'
+}
+
+resolve_path() {
+  local raw_path="$1"
+  local root_dir="$2"
+
+  if [ -z "$raw_path" ]; then
+    printf '\n'
+    return
+  fi
+
+  if command -v realpath >/dev/null 2>&1; then
+    case "$raw_path" in
+      /*) realpath -m -- "$raw_path" ;;
+      *) realpath -m -- "$root_dir/$raw_path" ;;
+    esac
+    return
+  fi
+
+  case "$raw_path" in
+    /*) printf '%s\n' "$raw_path" ;;
+    *) printf '%s/%s\n' "$root_dir" "$raw_path" ;;
+  esac
+}
+
+human_size() {
+  local bytes="$1"
+  numfmt --to=iec-i --suffix=B -- "$bytes" 2>/dev/null || printf '%sB' "$bytes"
+}
+
+file_size_bytes() {
+  local path="$1"
+  stat -c '%s' -- "$path" 2>/dev/null || printf '0\n'
+}
+
+file_description() {
+  local path="$1"
+  file -Lb -- "$path" 2>/dev/null || printf 'unavailable\n'
+}
+
+file_mime_type() {
+  local path="$1"
+  file -Lb --mime-type -- "$path" 2>/dev/null || printf 'application/octet-stream\n'
+}
+
+is_text_file() {
+  local path="$1"
+  local mime_type=""
+
+  mime_type="$(file_mime_type "$path")"
+  case "$mime_type" in
+    text/*|application/json|application/*+json|application/xml|application/*+xml|application/javascript|application/x-javascript|application/x-shellscript|application/x-empty|application/yaml|application/x-yaml|application/toml|inode/x-empty)
+      return 0
+      ;;
+  esac
+  return 1
+}
+
+repo_root_for_path() {
+  local path="$1"
+
+  if [ -d "$path" ]; then
+    git -C "$path" rev-parse --show-toplevel 2>/dev/null || true
+    return
+  fi
+
+  git -C "$(dirname "$path")" rev-parse --show-toplevel 2>/dev/null || true
+}
+
+relative_to_repo() {
+  local path="$1"
+  local repo_root="$2"
+
+  if [ "$path" = "$repo_root" ]; then
+    printf '.\n'
+    return 0
+  fi
+
+  case "$path" in
+    "$repo_root"/*)
+      printf '%s\n' "${path#"$repo_root"/}"
+      return 0
+      ;;
+  esac
+
+  return 1
+}
+
+git_is_tracked() {
+  local repo_root="$1"
+  local rel_path="$2"
+
+  git -C "$repo_root" ls-files --error-unmatch -- "$rel_path" >/dev/null 2>&1
+}
+
+git_has_unstaged_diff() {
+  local repo_root="$1"
+  local rel_path="$2"
+  local rc=0
+
+  git -C "$repo_root" diff --no-ext-diff --quiet -- "$rel_path" >/dev/null 2>&1 || rc=$?
+  [ "$rc" -eq 1 ]
+}
+
+git_has_staged_diff() {
+  local repo_root="$1"
+  local rel_path="$2"
+  local rc=0
+
+  git -C "$repo_root" diff --cached --no-ext-diff --quiet -- "$rel_path" >/dev/null 2>&1 || rc=$?
+  [ "$rc" -eq 1 ]
+}
+
+pick_diff_scope() {
+  local repo_root="$1"
+  local rel_path="$2"
+  local requested_mode="$3"
+
+  case "$requested_mode" in
+    auto)
+      if git_has_unstaged_diff "$repo_root" "$rel_path"; then
+        printf 'unstaged\n'
+        return 0
+      fi
+      if git_has_staged_diff "$repo_root" "$rel_path"; then
+        printf 'staged\n'
+        return 0
+      fi
+      ;;
+    unstaged)
+      if git_has_unstaged_diff "$repo_root" "$rel_path"; then
+        printf 'unstaged\n'
+        return 0
+      fi
+      if git_has_staged_diff "$repo_root" "$rel_path"; then
+        printf 'staged\n'
+        return 0
+      fi
+      ;;
+    staged)
+      if git_has_staged_diff "$repo_root" "$rel_path"; then
+        printf 'staged\n'
+        return 0
+      fi
+      if git_has_unstaged_diff "$repo_root" "$rel_path"; then
+        printf 'unstaged\n'
+        return 0
+      fi
+      ;;
+  esac
+
+  return 1
+}
+
+limit_stream() {
+  local max_lines="$1"
+
+  awk -v max_lines="$max_lines" '
+    NR <= max_lines { print; next }
+    NR == max_lines + 1 { truncated = 1 }
+    END {
+      if (truncated) {
+        printf "\n[truncated after %d lines]\n", max_lines
+      }
+    }
+  '
+}
+
+print_header() {
+  local title="$1"
+  local subtitle="${2:-}"
+
+  printf '\033[1m%s\033[0m\n' "$title"
+  if [ -n "$subtitle" ]; then
+    printf '\033[2m%s\033[0m\n' "$subtitle"
+  fi
+  printf '\n'
 }
 
 render_empty() {
-  cat <<'EOF'
-Preview
-
-No file selected.
-EOF
+  print_header "Preview" "No selection"
+  printf 'Move the broot cursor to update this pane.\n'
 }
 
 render_missing() {
   local path="$1"
-  printf '%s\n\n' "$path"
-  printf 'Path is missing or unreadable.\n'
+
+  print_header "$path" "Path missing or unreadable"
+  printf 'The selected path does not exist or cannot be read.\n'
+}
+
+render_special() {
+  local path="$1"
+  local description=""
+
+  description="$(file_description "$path")"
+  print_header "$path" "Special filesystem entry"
+  printf '%s\n' "$description"
 }
 
 render_directory() {
   local path="$1"
-  printf '%s\n\n' "$path"
-  LC_ALL=C ls -la --group-directories-first --color=always -- "$path" | sed -n "1,${max_list_lines}p"
+  local repo_root="$2"
+  local rel_path="$3"
+  local size_bytes=""
+  local size_human=""
+  local entry_count=""
+  local git_status=""
+
+  size_bytes="$(du -sb -- "$path" 2>/dev/null | awk '{print $1}' || printf '0')"
+  size_human="$(human_size "${size_bytes:-0}")"
+  entry_count="$(find "$path" -mindepth 1 -maxdepth 1 2>/dev/null | wc -l | tr -d ' ')"
+
+  print_header "$path" "Directory • ${entry_count:-0} entries • ${size_human}"
+
+  if [ -n "$repo_root" ] && [ -n "$rel_path" ]; then
+    git_status="$(
+      git -C "$repo_root" \
+        -c color.status=always \
+        -c core.quotepath=false \
+        status --short --untracked-files=all -- "$rel_path" 2>/dev/null | limit_stream "$max_git_status_lines"
+    )"
+    if [ -n "$git_status" ]; then
+      printf '\033[1mGit Status\033[0m\n'
+      printf '%s\n\n' "$git_status"
+    fi
+  fi
+
+  printf '\033[1mEntries\033[0m\n'
+  LC_ALL=C ls -la --group-directories-first --color=always --time-style=long-iso -- "$path" \
+    | sed '1d' \
+    | nl -ba -w 3 -s ' ' \
+    | limit_stream "$max_list_lines"
 }
 
 render_text() {
   local path="$1"
-  local bat_cmd
-  bat_cmd="$(choose_bat)"
+  local width="$2"
+  local bat_cmd=""
+  local size_bytes=""
 
-  printf '%s\n\n' "$path"
+  bat_cmd="$(choose_bat)"
+  size_bytes="$(file_size_bytes "$path")"
+
+  print_header "$path" "Text file • $(human_size "$size_bytes")"
+
   if [ -n "$bat_cmd" ]; then
-    "$bat_cmd" --paging=never --style=plain --color=always --line-range="1:${max_text_lines}" -- "$path"
+    COLORTERM=truecolor COLUMNS="$width" \
+      "$bat_cmd" \
+      --paging=never \
+      --force-colorization \
+      --style=numbers,changes \
+      --line-range="1:${max_text_lines}" \
+      -- "$path"
     return
   fi
-  sed -n "1,${max_text_lines}p" -- "$path"
+
+  printf '[bat unavailable; showing plain text]\n\n'
+  sed -n "1,${max_text_lines}p" -- "$path" | nl -ba -w 6 -s ' '
+}
+
+render_huge_text() {
+  local path="$1"
+  local size_bytes=""
+
+  size_bytes="$(file_size_bytes "$path")"
+  print_header "$path" "Large text file • $(human_size "$size_bytes") • syntax highlighting disabled for fast preview"
+  sed -n "1,${max_text_lines}p" -- "$path" | nl -ba -w 6 -s ' '
+  printf '\n[preview limited to the first %s lines]\n' "$max_text_lines"
 }
 
 render_binary() {
   local path="$1"
+  local repo_root="$2"
+  local rel_path="$3"
+  local diff_scope="${4:-}"
+  local size_bytes=""
+  local subtitle=""
 
-  printf '%s\n\n' "$path"
-  file -Lb -- "$path" 2>/dev/null || true
-  printf '\n'
+  size_bytes="$(file_size_bytes "$path")"
+  subtitle="Binary file • $(human_size "$size_bytes")"
+  if [ -n "$diff_scope" ]; then
+    subtitle="${subtitle} • ${diff_scope} changes"
+  fi
+
+  print_header "$path" "$subtitle"
+
+  if [ -n "$repo_root" ] && [ -n "$rel_path" ] && [ -n "$diff_scope" ]; then
+    printf '\033[1mGit Summary\033[0m\n'
+    if [ "$diff_scope" = "staged" ]; then
+      git -C "$repo_root" -c color.ui=always -c core.quotepath=false diff --cached --stat --summary -- "$rel_path" \
+        | limit_stream 20
+    else
+      git -C "$repo_root" -c color.ui=always -c core.quotepath=false diff --stat --summary -- "$rel_path" \
+        | limit_stream 20
+    fi
+    printf '\n'
+  fi
+
+  printf '\033[1mMetadata\033[0m\n'
+  printf '%s\n\n' "$(file_description "$path")"
+
+  printf '\033[1mHex Preview\033[0m\n'
   if command -v hexdump >/dev/null 2>&1; then
-    hexdump -C -- "$path" | sed -n "1,${max_hex_lines}p"
+    hexdump -C -n "$max_hex_bytes" -- "$path" | limit_stream "$max_hex_lines"
     return
   fi
-  od -Ax -tx1 -v -N 1024 -- "$path" | sed -n "1,${max_hex_lines}p"
+
+  od -Ax -tx1 -N "$max_hex_bytes" -v -- "$path" | limit_stream "$max_hex_lines"
+}
+
+render_git_diff() {
+  local path="$1"
+  local repo_root="$2"
+  local rel_path="$3"
+  local scope="$4"
+  local width="$5"
+  local delta_cmd=""
+  local subtitle=""
+  local git_cmd=()
+
+  subtitle="Git diff • ${scope}"
+  if [ "$scope" = "unstaged" ] && git_has_staged_diff "$repo_root" "$rel_path"; then
+    subtitle="${subtitle} • staged changes also exist"
+  fi
+  if [ "$scope" = "staged" ] && git_has_unstaged_diff "$repo_root" "$rel_path"; then
+    subtitle="${subtitle} • unstaged changes also exist"
+  fi
+
+  print_header "$path" "$subtitle"
+
+  git_cmd=(
+    git
+    -C "$repo_root"
+    -c color.ui=always
+    -c core.quotepath=false
+    diff
+    --no-ext-diff
+    --relative
+  )
+  if [ "$scope" = "staged" ]; then
+    git_cmd+=(--cached)
+  fi
+  git_cmd+=(-- "$rel_path")
+
+  delta_cmd="$(choose_delta)"
+  if [ -n "$delta_cmd" ]; then
+    COLORTERM=truecolor COLUMNS="$width" "${git_cmd[@]}" \
+      | COLORTERM=truecolor COLUMNS="$width" \
+        "$delta_cmd" \
+        --paging=never \
+        --line-numbers \
+        --true-color=always \
+        --width="$width" \
+      | limit_stream "$max_diff_lines"
+    return
+  fi
+
+  printf '[delta unavailable; showing plain git diff]\n\n'
+  "${git_cmd[@]}" | limit_stream "$max_diff_lines"
 }
 
 render_preview() {
-  local path="$1"
-  local mime_type
+  local raw_path="$1"
+  local request_base_dir="$2"
+  local request_diff_mode="$3"
+  local width="$4"
+  local resolved_path=""
+  local repo_root=""
+  local rel_path=""
+  local diff_scope=""
+  local size_bytes=""
 
-  clear_screen
+  reset_pane_state
 
-  if [ -z "$path" ]; then
+  resolved_path="$(resolve_path "$raw_path" "$request_base_dir")"
+  if [ -z "$resolved_path" ]; then
     render_empty
     return
   fi
 
-  if [ ! -e "$path" ] || [ ! -r "$path" ]; then
-    render_missing "$path"
+  if [ ! -e "$resolved_path" ] || [ ! -r "$resolved_path" ]; then
+    render_missing "$resolved_path"
     return
   fi
 
-  if [ -d "$path" ]; then
-    render_directory "$path"
+  if [ -d "$resolved_path" ]; then
+    repo_root="$(repo_root_for_path "$resolved_path")"
+    if [ -n "$repo_root" ]; then
+      rel_path="$(relative_to_repo "$resolved_path" "$repo_root" || true)"
+    fi
+    render_directory "$resolved_path" "$repo_root" "$rel_path"
     return
   fi
 
-  mime_type="$(file -Lb --mime-type -- "$path" 2>/dev/null || true)"
-  case "$mime_type" in
-    text/*|application/json|application/xml|application/x-empty|application/x-shellscript|application/javascript|application/x-javascript|application/yaml|application/x-yaml)
-      render_text "$path"
-      ;;
-    *)
-      render_binary "$path"
-      ;;
-  esac
+  if [ ! -f "$resolved_path" ]; then
+    render_special "$resolved_path"
+    return
+  fi
+
+  repo_root="$(repo_root_for_path "$resolved_path")"
+  if [ -n "$repo_root" ]; then
+    rel_path="$(relative_to_repo "$resolved_path" "$repo_root" || true)"
+  fi
+
+  if [ -n "$repo_root" ] && [ -n "$rel_path" ] && git_is_tracked "$repo_root" "$rel_path"; then
+    if diff_scope="$(pick_diff_scope "$repo_root" "$rel_path" "$request_diff_mode" 2>/dev/null)"; then
+      if is_text_file "$resolved_path"; then
+        render_git_diff "$resolved_path" "$repo_root" "$rel_path" "$diff_scope" "$width"
+        return
+      fi
+      render_binary "$resolved_path" "$repo_root" "$rel_path" "$diff_scope"
+      return
+    fi
+  fi
+
+  if is_text_file "$resolved_path"; then
+    size_bytes="$(file_size_bytes "$resolved_path")"
+    if [ "$size_bytes" -gt "$huge_file_bytes" ]; then
+      render_huge_text "$resolved_path"
+      return
+    fi
+    render_text "$resolved_path" "$width"
+    return
+  fi
+
+  render_binary "$resolved_path" "$repo_root" "$rel_path"
 }
 
-last_path="__uninitialized__"
-while true; do
-  current_path=""
-  if [ -f "$selection_file" ]; then
-    IFS= read -r current_path < "$selection_file" || true
-  fi
+watch_selection_updates() {
+  local last_marker="__uninitialized__"
+  local current_raw=""
+  local current_mode=""
+  local current_width=""
+  local marker=""
 
-  if [ "$current_path" != "$last_path" ]; then
-    render_preview "$current_path"
-    last_path="$current_path"
-  fi
+  while true; do
+    current_raw=""
+    if [ -f "$selection_file" ]; then
+      IFS= read -r current_raw < "$selection_file" || true
+    fi
 
-  sleep "$poll_interval"
+    current_mode="$(current_diff_mode)"
+    current_width="$(pane_width)"
+    marker="${current_raw}"$'\n'"${current_mode}"$'\n'"${current_width}"
+    if [ "$marker" != "$last_marker" ]; then
+      render_preview "$current_raw" "$base_dir" "$current_mode" "$current_width"
+      last_marker="$marker"
+    fi
+
+    sleep "$poll_interval"
+  done
+}
+
+if [ "$#" -gt 0 ] && [[ "$1" != -* ]]; then
+  selection_file="$1"
+  watch_mode=1
+  shift
+fi
+
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --watch-selection)
+      selection_file="${2:?missing value for --watch-selection}"
+      watch_mode=1
+      shift 2
+      ;;
+    --path)
+      selected_path="${2:?missing value for --path}"
+      shift 2
+      ;;
+    --base-dir)
+      base_dir="${2:?missing value for --base-dir}"
+      shift 2
+      ;;
+    --diff-mode)
+      diff_mode="${2:?missing value for --diff-mode}"
+      shift 2
+      ;;
+    --poll-interval)
+      poll_interval="${2:?missing value for --poll-interval}"
+      shift 2
+      ;;
+    -h|--help)
+      usage
+      exit 0
+      ;;
+    *)
+      printf 'unknown argument: %s\n' "$1" >&2
+      usage >&2
+      exit 1
+      ;;
+  esac
 done
+
+case "$diff_mode" in
+  auto|unstaged|staged) ;;
+  *)
+    printf 'invalid --diff-mode: %s\n' "$diff_mode" >&2
+    exit 1
+    ;;
+esac
+
+if [ "$watch_mode" -eq 1 ]; then
+  if [ -z "$selection_file" ]; then
+    printf 'missing required selection file\n' >&2
+    usage >&2
+    exit 1
+  fi
+  watch_selection_updates
+  exit 0
+fi
+
+if [ -z "$selected_path" ]; then
+  printf 'missing required --path when not using --watch-selection\n' >&2
+  usage >&2
+  exit 1
+fi
+
+render_preview "$selected_path" "$base_dir" "$(current_diff_mode)" "$(pane_width)"
