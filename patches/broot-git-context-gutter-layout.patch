@@ -107,7 +107,7 @@ index aadee06..19a9146 100644
      }
  
      fn write_date<W: Write>(
-@@ -322,27 +316,104 @@ impl<'a, 's, 't> DisplayableTree<'a, 's, 't> {
+@@ -322,27 +316,103 @@ impl<'a, 's, 't> DisplayableTree<'a, 's, 't> {
          line: &TreeLine,
          label_style: &CompoundStyle,
          selected: bool,
@@ -140,7 +140,6 @@ index aadee06..19a9146 100644
 +        let (git_style_ref, git_char) = self.line_git_status_display(line);
 +        cond_bg!(git_style, self, selected, git_style_ref);
 +        cw.queue_char(git_style, git_char)?;
-+        cw.queue_char(label_style, ' ')?;
 +
 +        if let Some(diff_stats) = line
 +            .git_status

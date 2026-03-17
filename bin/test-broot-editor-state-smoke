@@ -152,31 +152,31 @@ launch_tmux
 if ! wait_for_regex 'alpha\.txt'; then
   fail_with_capture 'broot never rendered the tracked file list'
 fi
-if ! wait_for_regex 'M[[:space:]]+\+[0-9]+-[0-9]+[[:space:]]+alpha\.txt$'; then
+if ! wait_for_regex 'M\+[0-9]+-[0-9]+[[:space:]]+.*alpha\.txt$'; then
   fail_with_capture 'git diff stats never moved into the alpha.txt gutter'
 fi
 assert_no_trailing_stats 'alpha\.txt'
 assert_no_trailing_stats 'beta\.txt'
 
 printf '0\t%s\n' "$repo_root/alpha.txt" >"$editor_state_file"
-if ! wait_for_regex 'M[[:space:]]+\+[0-9]+-[0-9]+[[:space:]]+=[[:space:]]+alpha\.txt$'; then
+if ! wait_for_regex 'M\+[0-9]+-[0-9]+[[:space:]]+=[[:space:]]+.*alpha\.txt$'; then
   fail_with_capture 'clean editor marker never appeared in broot'
 fi
 assert_aligned_file_columns 'alpha.txt' 'beta.txt'
 assert_no_trailing_stats 'alpha\.txt'
 
 printf '1\t%s\n' "$repo_root/alpha.txt" >"$editor_state_file"
-if ! wait_for_regex 'M[[:space:]]+\+[0-9]+-[0-9]+[[:space:]]+\*[[:space:]]+alpha\.txt$'; then
+if ! wait_for_regex 'M\+[0-9]+-[0-9]+[[:space:]]+\*[[:space:]]+.*alpha\.txt$'; then
   fail_with_capture 'modified editor marker never appeared in broot'
 fi
 assert_aligned_file_columns 'alpha.txt' 'beta.txt'
 assert_no_trailing_stats 'alpha\.txt'
 
 : >"$editor_state_file"
-if ! wait_for_absent_regex '[=*][[:space:]]+alpha\.txt$'; then
+if ! wait_for_absent_regex '[=*][[:space:]]+.*alpha\.txt$'; then
   fail_with_capture 'editor marker did not clear when the state file was emptied'
 fi
-if ! wait_for_regex 'M[[:space:]]+\+[0-9]+-[0-9]+[[:space:]]+alpha\.txt$'; then
+if ! wait_for_regex 'M\+[0-9]+-[0-9]+[[:space:]]+.*alpha\.txt$'; then
   fail_with_capture 'alpha.txt gutter did not return to git-only state'
 fi
 assert_aligned_file_columns 'alpha.txt' 'beta.txt'

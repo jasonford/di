@@ -266,7 +266,7 @@ mutate_probe
 
 expected_header_regex="^[[:space:]]+\\+$((header_insertions + 1))-${header_deletions}[[:space:]]+${workspace_regex}( .*)?$"
 expected_dir_regex="^.*\\+$((dir_insertions + 1))-${dir_deletions}[[:space:]]+bin$"
-expected_file_regex="^.*M[[:space:]]+\\+$((file_insertions + 1))-${file_deletions}[[:space:]]+.*[├└].*${probe_name_regex}$"
+expected_file_regex="^.*M\\+$((file_insertions + 1))-${file_deletions}[[:space:]]+.*[├└].*${probe_name_regex}$"
 
 assert_live_regex "$expected_header_regex" 'broot did not live update the upstream repo git summary for the mounted workspace root'
 assert_live_regex "$expected_dir_regex" 'broot did not live update the patched directory diff stats for the mounted workspace root'
