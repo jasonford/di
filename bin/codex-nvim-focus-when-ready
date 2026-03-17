@@ -18,7 +18,7 @@ pane_live() {
 
 socket_live() {
   [ -S "$socket_path" ] || return 1
-  nvim --server "$socket_path" --remote-expr '1' >/dev/null 2>&1
+  nvim --server "$socket_path" --remote-expr '1' </dev/null >/dev/null 2>&1
 }
 
 for _ in $(seq 1 100); do

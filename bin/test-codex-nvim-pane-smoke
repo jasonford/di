@@ -14,6 +14,7 @@ socket_path="$tmp_dir/nvim.sock"
 real_nvim="$(command -v nvim)"
 nvim_wrapper_dir="$tmp_dir/bin"
 test_path="$nvim_wrapper_dir:$PATH"
+remote_log="$tmp_dir/nvim-remote.log"
 codex_pane=""
 broot_pane=""
 preview_pane=""
@@ -143,7 +144,14 @@ setup_nvim_wrapper() {
   cat >"$nvim_wrapper_dir/nvim" <<EOF
 #!/usr/bin/env bash
 set -euo pipefail
-if [ "\${1:-}" != "--server" ]; then
+if [ "\${1:-}" = "--server" ]; then
+  if [ -t 0 ]; then
+    tty_stdin=1
+  else
+    tty_stdin=0
+  fi
+  printf 'server stdin_tty=%s tmux_pane=%s args=%s\n' "\$tty_stdin" "\${TMUX_PANE:-}" "\$*" >>"$remote_log"
+else
   sleep 0.3
 fi
 exec "$real_nvim" "\$@"
@@ -157,6 +165,7 @@ launch_tmux() {
   printf 'two\n' >"$repo_root/two.txt"
   : >"$selection_output"
   : >"$state_file"
+  : >"$remote_log"
 
   "${tmux_cmd[@]}" new-session -d -s "$TMUX_SESSION_NAME" -x 120 -y 40 'bash'
   "${tmux_cmd[@]}" rename-window -t "$TMUX_SESSION_NAME:0" workspace
@@ -228,6 +237,16 @@ TMUX_PANE="$broot_pane" "$SCRIPT_ROOT/bin/codex-open-in-vim" "$repo_root/two.txt
 assert_equals "$editor_pane" "$("${tmux_cmd[@]}" show-options -qv -t "$TMUX_SESSION_NAME" @codex_nvim_pane_id)" 'second open did not reuse the existing editor pane'
 assert_equals "$repo_root/two.txt" "$(nvim --server "$socket_path" --remote-expr 'expand("%:p")')" 'second open did not focus the requested buffer'
 assert_equals "['$repo_root/one.txt', '$repo_root/two.txt']" "$(nvim --server "$socket_path" --remote-expr 'string(map(getbufinfo({"buflisted":1}), "v:val.name"))')" 'expected both file buffers to stay open in Neovim'
+if ! wait_for_regex_in_file "$remote_log" "server stdin_tty=0 tmux_pane=$broot_pane"; then
+  printf 'expected tmux-triggered remote Neovim calls to run detached from the pane tty\n' >&2
+  cat "$remote_log" >&2 || true
+  exit 1
+fi
+if grep -Eq "server stdin_tty=1 tmux_pane=$broot_pane" "$remote_log"; then
+  printf 'tmux-triggered remote Neovim calls should not inherit the pane tty\n' >&2
+  cat "$remote_log" >&2 || true
+  exit 1
+fi
 
 nvim --server "$socket_path" --remote-send ':q<CR>'
 if ! wait_for_remote_expr 'expand("%:p")' "$repo_root/one.txt"; then

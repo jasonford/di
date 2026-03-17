@@ -24,7 +24,7 @@ socket_live() {
   local socket_path="$1"
   [ -n "$socket_path" ] || return 1
   [ -S "$socket_path" ] || return 1
-  nvim --server "$socket_path" --remote-expr '1' >/dev/null 2>&1
+  nvim --server "$socket_path" --remote-expr '1' </dev/null >/dev/null 2>&1
 }
 
 selection_file="$(tmux_option @broot_selection_output)"
@@ -52,7 +52,7 @@ esac
 
 if pane_live "$nvim_pane" && socket_live "$socket_path"; then
   selected_path_vimscript="${selected_path//\'/\'\'}"
-  nvim --server "$socket_path" --remote-expr "luaeval('CodexManagedOpen(_A)', '$selected_path_vimscript')" >/dev/null
+  nvim --server "$socket_path" --remote-expr "luaeval('CodexManagedOpen(_A)', '$selected_path_vimscript')" </dev/null >/dev/null 2>&1
   "$script_root/bin/codex-layout" three-column "$session_name"
   tmux select-pane -t "$nvim_pane"
   exit 0
