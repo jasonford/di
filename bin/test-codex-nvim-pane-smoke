@@ -1,0 +1,296 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+SCRIPT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+TMUX_CONFIG="${TMUX_CONFIG:-$SCRIPT_ROOT/.tmux/tmux.conf}"
+TMUX_SESSION_NAME="codex-nvim-pane-smoke-$$"
+tmux_cmd=(tmux -u -f "$TMUX_CONFIG")
+
+tmp_dir="$(mktemp -d /tmp/codex-nvim-pane.XXXXXX)"
+repo_root="$tmp_dir/repo"
+selection_output="$tmp_dir/selection.txt"
+state_file="$tmp_dir/editor-state.tsv"
+socket_path="$tmp_dir/nvim.sock"
+real_nvim="$(command -v nvim)"
+nvim_wrapper_dir="$tmp_dir/bin"
+test_path="$nvim_wrapper_dir:$PATH"
+codex_pane=""
+broot_pane=""
+preview_pane=""
+editor_pane=""
+
+cleanup() {
+  "${tmux_cmd[@]}" kill-session -t "$TMUX_SESSION_NAME" >/dev/null 2>&1 || true
+  rm -rf "$tmp_dir"
+}
+trap cleanup EXIT
+
+require_command() {
+  if ! command -v "$1" >/dev/null 2>&1; then
+    printf 'missing required command: %s\n' "$1" >&2
+    exit 1
+  fi
+}
+
+pane_width() {
+  "${tmux_cmd[@]}" display-message -p -t "$1" '#{pane_width}'
+}
+
+window_width() {
+  "${tmux_cmd[@]}" display-message -p -t "$1" '#{window_width}'
+}
+
+active_pane() {
+  "${tmux_cmd[@]}" display-message -p -t "$TMUX_SESSION_NAME:workspace" '#{pane_id}'
+}
+
+pane_dead() {
+  "${tmux_cmd[@]}" display-message -p -t "$1" '#{pane_dead}' 2>/dev/null || printf '1\n'
+}
+
+wait_for_socket() {
+  local deadline=$((SECONDS + 10))
+  while (( SECONDS < deadline )); do
+    if [ -S "$socket_path" ] && nvim --server "$socket_path" --remote-expr '1' >/dev/null 2>&1; then
+      return 0
+    fi
+    sleep 0.1
+  done
+  return 1
+}
+
+wait_for_regex_in_file() {
+  local path="$1"
+  local regex="$2"
+  local deadline=$((SECONDS + 10))
+  while (( SECONDS < deadline )); do
+    if [ -f "$path" ] && grep -Eq "$regex" "$path"; then
+      return 0
+    fi
+    sleep 0.1
+  done
+  return 1
+}
+
+wait_for_empty_file() {
+  local path="$1"
+  local deadline=$((SECONDS + 10))
+  while (( SECONDS < deadline )); do
+    if [ ! -s "$path" ]; then
+      return 0
+    fi
+    sleep 0.1
+  done
+  return 1
+}
+
+wait_for_active_pane() {
+  local expected="$1"
+  local deadline=$((SECONDS + 10))
+  while (( SECONDS < deadline )); do
+    if [ "$(active_pane)" = "$expected" ]; then
+      return 0
+    fi
+    sleep 0.1
+  done
+  return 1
+}
+
+wait_for_remote_expr() {
+  local expr="$1"
+  local expected="$2"
+  local deadline=$((SECONDS + 10))
+  while (( SECONDS < deadline )); do
+    if [ "$(nvim --server "$socket_path" --remote-expr "$expr" 2>/dev/null || true)" = "$expected" ]; then
+      return 0
+    fi
+    sleep 0.1
+  done
+  return 1
+}
+
+wait_for_editor_teardown() {
+  local deadline=$((SECONDS + 10))
+  while (( SECONDS < deadline )); do
+    editor_pane="$("${tmux_cmd[@]}" show-options -qv -t "$TMUX_SESSION_NAME" @codex_nvim_pane_id)"
+    if [ -z "$editor_pane" ] && [ ! -S "$socket_path" ]; then
+      return 0
+    fi
+    sleep 0.1
+  done
+  return 1
+}
+
+assert_equals() {
+  local expected="$1"
+  local actual="$2"
+  local message="$3"
+  if [ "$expected" != "$actual" ]; then
+    printf '%s\nexpected: %s\nactual:   %s\n' "$message" "$expected" "$actual" >&2
+    exit 1
+  fi
+}
+
+assert_width() {
+  local expected="$1"
+  local pane_id="$2"
+  local message="$3"
+  assert_equals "$expected" "$(pane_width "$pane_id")" "$message"
+}
+
+setup_nvim_wrapper() {
+  mkdir -p "$nvim_wrapper_dir"
+  cat >"$nvim_wrapper_dir/nvim" <<EOF
+#!/usr/bin/env bash
+set -euo pipefail
+if [ "\${1:-}" != "--server" ]; then
+  sleep 0.3
+fi
+exec "$real_nvim" "\$@"
+EOF
+  chmod +x "$nvim_wrapper_dir/nvim"
+}
+
+launch_tmux() {
+  mkdir -p "$repo_root"
+  printf 'one\n' >"$repo_root/one.txt"
+  printf 'two\n' >"$repo_root/two.txt"
+  : >"$selection_output"
+  : >"$state_file"
+
+  "${tmux_cmd[@]}" new-session -d -s "$TMUX_SESSION_NAME" -x 120 -y 40 'bash'
+  "${tmux_cmd[@]}" rename-window -t "$TMUX_SESSION_NAME:0" workspace
+  "${tmux_cmd[@]}" set-environment -t "$TMUX_SESSION_NAME" PATH "$test_path"
+  codex_pane="$("${tmux_cmd[@]}" display-message -p -t "$TMUX_SESSION_NAME:0.0" '#{pane_id}')"
+  broot_pane="$("${tmux_cmd[@]}" split-window -d -h -P -F '#{pane_id}' -t "$codex_pane" 'bash')"
+  preview_pane="$("${tmux_cmd[@]}" split-window -d -v -P -F '#{pane_id}' -p 35 -t "$broot_pane" 'bash')"
+
+  "${tmux_cmd[@]}" set-option -t "$TMUX_SESSION_NAME" @codex_pane_id "$codex_pane"
+  "${tmux_cmd[@]}" set-option -t "$TMUX_SESSION_NAME" @broot_pane_id "$broot_pane"
+  "${tmux_cmd[@]}" set-option -t "$TMUX_SESSION_NAME" @broot_preview_pane_id "$preview_pane"
+  "${tmux_cmd[@]}" set-option -t "$TMUX_SESSION_NAME" @broot_runtime_dir "$tmp_dir/runtime"
+  "${tmux_cmd[@]}" set-option -t "$TMUX_SESSION_NAME" @broot_workspace_dir "$repo_root"
+  "${tmux_cmd[@]}" set-option -t "$TMUX_SESSION_NAME" @broot_selection_output "$selection_output"
+  "${tmux_cmd[@]}" set-option -t "$TMUX_SESSION_NAME" @codex_nvim_socket "$socket_path"
+  "${tmux_cmd[@]}" set-option -t "$TMUX_SESSION_NAME" @codex_nvim_state_file "$state_file"
+
+  "$SCRIPT_ROOT/bin/codex-layout" two-column "$TMUX_SESSION_NAME"
+}
+
+require_command grep
+require_command nvim
+require_command tmux
+
+setup_nvim_wrapper
+export PATH="$test_path"
+launch_tmux
+"${tmux_cmd[@]}" select-pane -t "$broot_pane"
+two_column_left="$(( ($(window_width "$codex_pane") - 1) / 3 ))"
+assert_width "$two_column_left" "$codex_pane" 'two-column layout did not size the codex pane to one third'
+assert_width "$(( $(window_width "$codex_pane") - two_column_left - 1 ))" "$broot_pane" 'two-column layout did not size the broot pane to two thirds'
+assert_equals "$(pane_width "$broot_pane")" "$(pane_width "$preview_pane")" 'two-column layout did not preserve the preview width'
+
+TMUX_PANE="$broot_pane" "$SCRIPT_ROOT/bin/codex-open-in-vim" "$repo_root/one.txt"
+editor_pane="$("${tmux_cmd[@]}" show-options -qv -t "$TMUX_SESSION_NAME" @codex_nvim_pane_id)"
+if [ -z "$editor_pane" ] || [ "$(pane_dead "$editor_pane")" != "0" ]; then
+  printf 'editor pane was not created during the async cold start\n' >&2
+  exit 1
+fi
+assert_equals "$broot_pane" "$(active_pane)" 'first open shifted focus before Neovim became ready'
+if [ -S "$socket_path" ] && nvim --server "$socket_path" --remote-expr '1' >/dev/null 2>&1; then
+  printf 'first open blocked until the Neovim socket was ready\n' >&2
+  exit 1
+fi
+if ! wait_for_socket; then
+  printf 'nvim socket never became ready\n' >&2
+  exit 1
+fi
+if ! wait_for_active_pane "$editor_pane"; then
+  printf 'focus never moved into the Neovim pane after startup\n' >&2
+  exit 1
+fi
+
+three_column_side="$(( ($(window_width "$codex_pane") - 2) / 3 ))"
+three_column_middle="$(( $(window_width "$codex_pane") - three_column_side - three_column_side - 2 ))"
+assert_width "$three_column_side" "$codex_pane" 'three-column layout did not keep the codex pane at one third'
+assert_width "$three_column_middle" "$broot_pane" 'three-column layout did not resize the broot pane to the middle third'
+assert_equals "$(pane_width "$broot_pane")" "$(pane_width "$preview_pane")" 'three-column layout did not keep preview under the broot pane'
+assert_width "$three_column_side" "$editor_pane" 'three-column layout did not size the editor pane to one third'
+
+assert_equals "$repo_root/one.txt" "$(nvim --server "$socket_path" --remote-expr 'expand("%:p")')" 'first open did not select the requested buffer'
+if ! wait_for_regex_in_file "$state_file" "^0[[:space:]]+$repo_root/one\\.txt$"; then
+  printf 'state file never reflected the first clean buffer\n' >&2
+  cat "$state_file" >&2 || true
+  exit 1
+fi
+
+TMUX_PANE="$broot_pane" "$SCRIPT_ROOT/bin/codex-open-in-vim" "$repo_root/two.txt"
+assert_equals "$editor_pane" "$("${tmux_cmd[@]}" show-options -qv -t "$TMUX_SESSION_NAME" @codex_nvim_pane_id)" 'second open did not reuse the existing editor pane'
+assert_equals "$repo_root/two.txt" "$(nvim --server "$socket_path" --remote-expr 'expand("%:p")')" 'second open did not focus the requested buffer'
+assert_equals "['$repo_root/one.txt', '$repo_root/two.txt']" "$(nvim --server "$socket_path" --remote-expr 'string(map(getbufinfo({"buflisted":1}), "v:val.name"))')" 'expected both file buffers to stay open in Neovim'
+
+nvim --server "$socket_path" --remote-send ':q<CR>'
+if ! wait_for_remote_expr 'expand("%:p")' "$repo_root/one.txt"; then
+  printf 'plain :q did not keep the editor pane alive on the fallback buffer\n' >&2
+  exit 1
+fi
+assert_equals "['$repo_root/one.txt']" "$(nvim --server "$socket_path" --remote-expr 'string(map(getbufinfo({"buflisted":1}), "v:val.name"))')" 'plain :q did not remove the closed buffer'
+if ! wait_for_regex_in_file "$state_file" "^0[[:space:]]+$repo_root/one\\.txt$"; then
+  printf 'state file did not collapse to the fallback buffer after plain :q\n' >&2
+  cat "$state_file" >&2 || true
+  exit 1
+fi
+
+TMUX_PANE="$broot_pane" "$SCRIPT_ROOT/bin/codex-open-in-vim" "$repo_root/two.txt"
+nvim --server "$socket_path" --remote-expr 'execute("call setline(1, [\"changed\"]) | echo &modified")' >/dev/null
+if ! wait_for_regex_in_file "$state_file" "^1[[:space:]]+$repo_root/two\\.txt$"; then
+  printf 'state file never reflected a modified buffer\n' >&2
+  cat "$state_file" >&2 || true
+  exit 1
+fi
+
+nvim --server "$socket_path" --remote-send ':q<CR>'
+sleep 0.2
+assert_equals "$repo_root/two.txt" "$(nvim --server "$socket_path" --remote-expr 'expand("%:p")')" 'plain :q on a modified buffer should keep the current buffer visible'
+assert_equals "['$repo_root/one.txt', '$repo_root/two.txt']" "$(nvim --server "$socket_path" --remote-expr 'string(map(getbufinfo({"buflisted":1}), "v:val.name"))')" 'plain :q on a modified buffer should not remove any buffers'
+if ! wait_for_regex_in_file "$state_file" "^1[[:space:]]+$repo_root/two\\.txt$"; then
+  printf 'modified buffer state should remain after a refused plain :q\n' >&2
+  cat "$state_file" >&2 || true
+  exit 1
+fi
+
+nvim --server "$socket_path" --remote-send ':q!<CR>'
+if ! wait_for_remote_expr 'expand("%:p")' "$repo_root/one.txt"; then
+  printf ':q! did not keep the editor pane alive on the fallback buffer\n' >&2
+  exit 1
+fi
+assert_equals "['$repo_root/one.txt']" "$(nvim --server "$socket_path" --remote-expr 'string(map(getbufinfo({"buflisted":1}), "v:val.name"))')" ':q! did not remove the force-closed buffer'
+assert_equals "two" "$(cat "$repo_root/two.txt")" ':q! should not have written the modified file'
+
+TMUX_PANE="$broot_pane" "$SCRIPT_ROOT/bin/codex-open-in-vim" "$repo_root/two.txt"
+nvim --server "$socket_path" --remote-expr 'execute("call setline(1, [\"saved\"]) | echo &modified")' >/dev/null
+nvim --server "$socket_path" --remote-send 'ZZ'
+if ! wait_for_remote_expr 'expand("%:p")' "$repo_root/one.txt"; then
+  printf 'ZZ did not return to the fallback buffer after saving\n' >&2
+  exit 1
+fi
+assert_equals "['$repo_root/one.txt']" "$(nvim --server "$socket_path" --remote-expr 'string(map(getbufinfo({"buflisted":1}), "v:val.name"))')" 'ZZ did not remove the written buffer'
+assert_equals "saved" "$(cat "$repo_root/two.txt")" 'ZZ did not write the modified file before closing it'
+
+nvim --server "$socket_path" --remote-send ':q<CR>'
+if ! wait_for_editor_teardown; then
+  printf 'editor pane never tore down after quitting the last file buffer\n' >&2
+  exit 1
+fi
+if ! wait_for_empty_file "$state_file"; then
+  printf 'state file was not cleared when the editor exited\n' >&2
+  cat "$state_file" >&2 || true
+  exit 1
+fi
+
+restored_left="$(( ($(window_width "$codex_pane") - 1) / 3 ))"
+assert_width "$restored_left" "$codex_pane" 'teardown did not restore the codex pane width'
+assert_width "$(( $(window_width "$codex_pane") - restored_left - 1 ))" "$broot_pane" 'teardown did not restore the broot pane width'
+assert_equals "$(pane_width "$broot_pane")" "$(pane_width "$preview_pane")" 'teardown did not preserve the preview width'
+
+printf 'codex nvim pane smoke test passed\n'

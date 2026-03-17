@@ -1,0 +1,33 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+if [ "$#" -ne 3 ]; then
+  printf 'usage: codex-nvim-focus-when-ready <session-name> <pane-id> <socket-path>\n' >&2
+  exit 1
+fi
+
+session_name="$1"
+pane_id="$2"
+socket_path="$3"
+
+pane_live() {
+  local target="$1"
+  [ -n "$target" ] || return 1
+  [ "$(tmux display-message -p -t "$target" '#{pane_dead}' 2>/dev/null || printf '1')" = "0" ]
+}
+
+socket_live() {
+  [ -S "$socket_path" ] || return 1
+  nvim --server "$socket_path" --remote-expr '1' >/dev/null 2>&1
+}
+
+for _ in $(seq 1 100); do
+  if socket_live; then
+    current_pane="$(tmux show-options -qv -t "$session_name" @codex_nvim_pane_id)"
+    if [ "$current_pane" = "$pane_id" ] && pane_live "$pane_id"; then
+      tmux select-pane -t "$pane_id" >/dev/null 2>&1 || true
+    fi
+    exit 0
+  fi
+  sleep 0.05
+done

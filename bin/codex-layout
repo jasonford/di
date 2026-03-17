@@ -1,0 +1,62 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+usage() {
+  printf 'usage: codex-layout <two-column|three-column> [session-name]\n' >&2
+}
+
+if [ "$#" -lt 1 ] || [ "$#" -gt 2 ]; then
+  usage
+  exit 1
+fi
+
+layout_name="$1"
+session_name="${2:-}"
+
+if [ -z "$session_name" ]; then
+  if [ -z "${TMUX_PANE:-}" ]; then
+    printf 'codex-layout needs a tmux pane or explicit session name\n' >&2
+    exit 1
+  fi
+  session_name="$(tmux display-message -p -t "$TMUX_PANE" '#S')"
+fi
+
+tmux_option() {
+  tmux show-options -qv -t "$session_name" "$1"
+}
+
+pane_live() {
+  local pane_id="$1"
+  [ -n "$pane_id" ] || return 1
+  [ "$(tmux display-message -p -t "$pane_id" '#{pane_dead}' 2>/dev/null || printf '1')" = "0" ]
+}
+
+codex_pane="$(tmux_option @codex_pane_id)"
+nvim_pane="$(tmux_option @codex_nvim_pane_id)"
+
+if ! pane_live "$codex_pane"; then
+  printf 'missing codex pane in session %s\n' "$session_name" >&2
+  exit 1
+fi
+
+window_width="$(tmux display-message -p -t "$codex_pane" '#{window_width}')"
+
+case "$layout_name" in
+  two-column)
+    codex_width="$(( (window_width - 1) / 3 ))"
+    tmux resize-pane -t "$codex_pane" -x "$codex_width" >/dev/null 2>&1 || true
+    ;;
+  three-column)
+    if ! pane_live "$nvim_pane"; then
+      printf 'missing nvim pane in session %s\n' "$session_name" >&2
+      exit 1
+    fi
+    side_width="$(( (window_width - 2) / 3 ))"
+    tmux resize-pane -t "$codex_pane" -x "$side_width" >/dev/null 2>&1 || true
+    tmux resize-pane -t "$nvim_pane" -x "$side_width" >/dev/null 2>&1 || true
+    ;;
+  *)
+    usage
+    exit 1
+    ;;
+esac

@@ -1,0 +1,129 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+SCRIPT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+BROOT_BIN="${BROOT_BIN:-broot}"
+TMUX_CONFIG="${TMUX_CONFIG:-$SCRIPT_ROOT/.tmux/tmux.conf}"
+TMUX_SESSION_NAME="broot-editor-state-smoke-$$"
+tmux_cmd=(tmux -u -f "$TMUX_CONFIG")
+
+tmp_dir="$(mktemp -d /tmp/broot-editor-state.XXXXXX)"
+repo_root="$tmp_dir/repo"
+selection_output="$tmp_dir/selection.txt"
+editor_state_file="$tmp_dir/editor-state.tsv"
+home_dir="$tmp_dir/home"
+xdg_config_home="$tmp_dir/xdg-config"
+last_capture=""
+
+cleanup() {
+  "${tmux_cmd[@]}" kill-session -t "$TMUX_SESSION_NAME" >/dev/null 2>&1 || true
+  rm -rf "$tmp_dir"
+}
+trap cleanup EXIT
+
+require_command() {
+  if ! command -v "$1" >/dev/null 2>&1; then
+    printf 'missing required command: %s\n' "$1" >&2
+    exit 1
+  fi
+}
+
+require_executable() {
+  if [[ "$1" == */* ]]; then
+    [ -x "$1" ] || {
+      printf 'missing required executable: %s\n' "$1" >&2
+      exit 1
+    }
+  else
+    require_command "$1"
+  fi
+}
+
+capture_pane() {
+  last_capture="$("${tmux_cmd[@]}" capture-pane -p -t "$TMUX_SESSION_NAME:0.0" -S -200 2>/dev/null || true)"
+}
+
+pane_dead() {
+  "${tmux_cmd[@]}" display-message -p -t "$TMUX_SESSION_NAME:0.0" '#{pane_dead}' 2>/dev/null || printf '1\n'
+}
+
+wait_for_regex() {
+  local expected_regex="$1"
+  local deadline=$((SECONDS + 10))
+  while (( SECONDS < deadline )); do
+    capture_pane
+    if printf '%s\n' "$last_capture" | grep -Eq "$expected_regex"; then
+      return 0
+    fi
+    if [ "$(pane_dead)" = "1" ]; then
+      return 1
+    fi
+    sleep 0.1
+  done
+  capture_pane
+  printf '%s\n' "$last_capture" | grep -Eq "$expected_regex"
+}
+
+wait_for_absent_regex() {
+  local expected_regex="$1"
+  local deadline=$((SECONDS + 10))
+  while (( SECONDS < deadline )); do
+    capture_pane
+    if ! printf '%s\n' "$last_capture" | grep -Eq "$expected_regex"; then
+      return 0
+    fi
+    if [ "$(pane_dead)" = "1" ]; then
+      return 1
+    fi
+    sleep 0.1
+  done
+  capture_pane
+  ! printf '%s\n' "$last_capture" | grep -Eq "$expected_regex"
+}
+
+fail_with_capture() {
+  local message="$1"
+  capture_pane
+  printf '%s\n' "$message" >&2
+  printf '%s\n' "$last_capture" >&2
+  exit 1
+}
+
+launch_tmux() {
+  mkdir -p "$repo_root" "$home_dir" "$xdg_config_home"
+  printf 'alpha\n' >"$repo_root/alpha.txt"
+  printf 'beta\n' >"$repo_root/beta.txt"
+  : >"$selection_output"
+  : >"$editor_state_file"
+
+  "${tmux_cmd[@]}" new-session -d -s "$TMUX_SESSION_NAME" -x 120 -y 20 \
+    "TERM=tmux-256color HOME=$home_dir BR_INSTALL=no XDG_CONFIG_HOME=$xdg_config_home $BROOT_BIN --selection-output $selection_output --editor-state-file $editor_state_file -g --confine-root $repo_root --cmd :toggle_watch"
+}
+
+require_command grep
+require_command realpath
+require_command tmux
+require_executable "$BROOT_BIN"
+
+launch_tmux
+
+if ! wait_for_regex 'alpha\.txt'; then
+  fail_with_capture 'broot never rendered the tracked file list'
+fi
+
+printf '0\t%s\n' "$repo_root/alpha.txt" >"$editor_state_file"
+if ! wait_for_regex '=[[:space:]]+alpha\.txt'; then
+  fail_with_capture 'clean editor marker never appeared in broot'
+fi
+
+printf '1\t%s\n' "$repo_root/alpha.txt" >"$editor_state_file"
+if ! wait_for_regex '\*[[:space:]]+alpha\.txt'; then
+  fail_with_capture 'modified editor marker never appeared in broot'
+fi
+
+: >"$editor_state_file"
+if ! wait_for_absent_regex '[=*][[:space:]]+alpha\.txt'; then
+  fail_with_capture 'editor marker did not clear when the state file was emptied'
+fi
+
+printf 'broot editor state smoke test passed\n'

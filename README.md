@@ -17,7 +17,7 @@ chmod +x develop
 ## Workflow
 
 - Start in a full Codex session with `./develop`
-- Startup layout is `codex | broot / preview`
+- Startup layout is `codex | broot / preview`, sized as `1/3 | 2/3`
 - Codex starts in inline mode by default (`--no-alt-screen`) so tmux pane scrollback and redraw are more reliable
 - You can tell Codex what to edit in plain language, for example `edit README.md`, `fix the Docker launcher`, or `change the Neovim config to ...`. Codex should infer the relevant file(s) from repo context and proceed unless the target is genuinely ambiguous.
 - Open files with plain `nvim` inside the container
@@ -25,6 +25,9 @@ chmod +x develop
 - `broot` launches in the upper-right pane as a patched source build, starts in watch mode, and has git file status info enabled by default
 - The bundled `broot` patches make watch mode refresh recursively from the current root and show inline git `+/-` counts on changed files and directories
 - The lower-right pane follows broot's current selection and shows unified git diffs for changed tracked text files, highlighted text previews for normal files, and safe fallbacks for directories, binaries, and large files
+- Press `Enter` or double-click a text file in broot to open it in a managed Neovim pane on the far right; the layout switches to `1/3 | 1/3 | 1/3`
+- The broot tree marks open Neovim buffers with `=` for clean buffers and `*` for buffers with unsaved edits
+- The Neovim pane is reused for later selections, only shows one visible buffer at a time, and disappears automatically when the last file buffer is closed
 - `broot` is launched directly with `--confine-root`, so browsing stays pinned to the mounted repo without `proot`
 
 ## Notes
@@ -36,7 +39,6 @@ chmod +x develop
 - The image pins `@openai/codex` to `0.114.0`
 - The image builds a patched `broot` from the upstream source tag selected by `BROOT_VERSION=... ./develop`
 - The bundled broot patches track `v1.55.0`; if you change `BROOT_VERSION`, you may need to refresh the files in `patches/`
-- Override the `broot` pane width with `BROOT_PANE_WIDTH=... ./develop`
 - Override the preview pane height with `BROOT_PREVIEW_PANE_PERCENT=... ./develop`
 - Override the initial preview diff mode with `BROOT_PREVIEW_DIFF_MODE=auto|unstaged|staged ./develop`
 - Switch preview diff mode live with `tmux set -t codex @broot_preview_diff_mode staged`, `unstaged`, or `auto`

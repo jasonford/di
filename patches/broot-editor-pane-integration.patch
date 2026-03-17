@@ -1,0 +1,413 @@
+diff --git a/src/app/panel_state.rs b/src/app/panel_state.rs
+index c3eba56..7c7ed24 100644
+--- a/src/app/panel_state.rs
++++ b/src/app/panel_state.rs
+@@ -49,10 +49,12 @@ pub trait PanelState {
+ 
+     fn on_double_click(
+         &mut self,
++        _w: &mut W,
+         _x: u16,
+         _y: u16,
+         _screen: Screen,
+-        _con: &AppContext,
++        _app_state: &mut AppState,
++        _cc: &CmdContext,
+     ) -> Result<CmdResult, ProgramError> {
+         Ok(CmdResult::Keep)
+     }
+@@ -899,7 +901,7 @@ pub trait PanelState {
+         let screen = cc.app.screen;
+         match &cc.cmd {
+             Command::Click(x, y) => self.on_click(*x, *y, screen, con),
+-            Command::DoubleClick(x, y) => self.on_double_click(*x, *y, screen, con),
++            Command::DoubleClick(x, y) => self.on_double_click(w, *x, *y, screen, app_state, cc),
+             Command::PatternEdit { raw, expr } => match InputPattern::new(raw.clone(), expr, con) {
+                 Ok(pattern) => self.on_pattern(pattern, app_state, con),
+                 Err(e) => Ok(CmdResult::DisplayError(format!("{e}"))),
+diff --git a/src/browser/browser_state.rs b/src/browser/browser_state.rs
+index df15fcd..3818df8 100644
+--- a/src/browser/browser_state.rs
++++ b/src/browser/browser_state.rs
+@@ -15,6 +15,7 @@ use {
+         tree_build::TreeBuilder,
+         verb::*,
+     },
++    crokey::key,
+     opener,
+     std::path::{Path, PathBuf},
+ };
+@@ -24,6 +25,7 @@ use {
+ pub struct BrowserState {
+     pub tree: Tree,
+     pub filtered_tree: Option<Tree>,
++    editor_state_file: Option<PathBuf>,
+     mode: Mode,                        // whether we're in 'input' or 'normal' mode
+     pending_task: Option<BrowserTask>, // note: there are some other pending task, see
+ }
+@@ -69,6 +71,7 @@ impl BrowserState {
+         Ok(BrowserState {
+             tree,
+             filtered_tree: None,
++            editor_state_file: con.launch_args.editor_state_file.clone(),
+             mode: con.initial_mode(),
+             pending_task,
+         })
+@@ -247,6 +250,11 @@ impl PanelState for BrowserState {
+                 }
+             }
+         }
++        if let Some(editor_state_file) = &self.editor_state_file {
++            if editor_state_file.exists() {
++                paths.push(editor_state_file.clone());
++            }
++        }
+         paths
+     }
+ 
+@@ -311,13 +319,23 @@ impl PanelState for BrowserState {
+ 
+     fn on_double_click(
+         &mut self,
++        w: &mut W,
+         _x: u16,
+         y: u16,
+         screen: Screen,
+-        con: &AppContext,
++        app_state: &mut AppState,
++        cc: &CmdContext,
+     ) -> Result<CmdResult, ProgramError> {
++        let con = &cc.app.con;
+         if self.displayed_tree().selection == y as usize {
+-            self.open_selection_stay_in_broot(screen, con, false, false)
++            if let Some(verb) =
++                con.verb_store
++                    .key_verb(key!(enter), self.sel_info(app_state), self.get_type())
++            {
++                self.execute_verb(w, verb, None, TriggerType::Other, app_state, cc)
++            } else {
++                self.open_selection_stay_in_broot(screen, con, false, false)
++            }
+         } else {
+             // A double click always come after a simple click at
+             // same position. If it's not the selected line, it means
+diff --git a/src/cli/args.rs b/src/cli/args.rs
+index d80c573..8303082 100644
+--- a/src/cli/args.rs
++++ b/src/cli/args.rs
+@@ -158,6 +158,10 @@ pub struct Args {
+     #[arg(long, value_name = "selection-output")]
+     pub selection_output: Option<PathBuf>,
+ 
++    /// Optional path to read for managed editor buffer state
++    #[arg(long, value_name = "editor-state-file")]
++    pub editor_state_file: Option<PathBuf>,
++
+     /// Semicolon separated commands to execute
+     #[arg(short, long, value_name = "cmd")]
+     pub cmd: Option<String>,
+diff --git a/src/command/panel_input.rs b/src/command/panel_input.rs
+index 656af4e..046fb1d 100644
+--- a/src/command/panel_input.rs
++++ b/src/command/panel_input.rs
+@@ -347,28 +347,7 @@ impl PanelInput {
+         sel_info: SelInfo<'_>,
+         panel_state_type: PanelStateType,
+     ) -> Option<&'c Verb> {
+-        for verb in con.verb_store.verbs() {
+-            // note that there can be several verbs with the same key and
+-            // not all of them can apply
+-            if !verb.keys.contains(&key) {
+-                continue;
+-            }
+-            if !sel_info.is_accepted_by(verb.selection_condition) {
+-                continue;
+-            }
+-            if !verb.can_be_called_in_panel(panel_state_type) {
+-                continue;
+-            }
+-            if !verb.file_extensions.is_empty() {
+-                let extension = sel_info.extension();
+-                if !extension.is_some_and(|ext| verb.file_extensions.iter().any(|ve| ve == ext)) {
+-                    continue;
+-                }
+-            }
+-            debug!("verb for key: {}", &verb.execution);
+-            return Some(verb);
+-        }
+-        None
++        con.verb_store.key_verb(key, sel_info, panel_state_type)
+     }
+ 
+     /// Consume the event, maybe change the input, return a command
+diff --git a/src/display/col.rs b/src/display/col.rs
+index 622d075..1138394 100644
+--- a/src/display/col.rs
++++ b/src/display/col.rs
+@@ -139,7 +139,7 @@ impl Col {
+             Col::Count => tree_options.show_counts,
+             Col::Branch => true,
+             //Col::Staged => app_state.map_or(false, |a| !a.stage.is_empty()),
+-            Col::Staged => false,
++            Col::Staged => tree.lines.iter().any(|line| line.editor_state.is_some()),
+             Col::Name => true,
+         }
+     }
+diff --git a/src/display/displayable_tree.rs b/src/display/displayable_tree.rs
+index bd30087..eb36e99 100644
+--- a/src/display/displayable_tree.rs
++++ b/src/display/displayable_tree.rs
+@@ -11,6 +11,7 @@ use {
+     crate::{
+         app::AppState,
+         content_search::ContentMatch,
++        editor_state::EditorBufferState,
+         errors::ProgramError,
+         file_sum::FileSum,
+         pattern::PatternObject,
+@@ -316,16 +317,28 @@ impl<'a, 's, 't> DisplayableTree<'a, 's, 't> {
+ 
+     /// write the symbol showing whether the path is staged
+     fn write_line_stage_mark<W: Write>(
++        &self,
+         cw: &mut CropWriter<W>,
+-        style: &CompoundStyle,
+-        staged: bool,
++        line: &TreeLine,
++        label_style: &CompoundStyle,
++        selected: bool,
+     ) -> Result<usize, termimad::Error> {
+-        Ok(if staged {
+-            cw.queue_char(style, '◍')?; // ▣
+-            0
+-        } else {
+-            1
+-        })
++        let Some(editor_state) = line.editor_state else {
++            return Ok(1);
++        };
++
++        let style = match editor_state {
++            EditorBufferState::Clean => &self.skin.git_status_current,
++            EditorBufferState::Modified => &self.skin.git_status_modified,
++        };
++        let mark = match editor_state {
++            EditorBufferState::Clean => '=',
++            EditorBufferState::Modified => '*',
++        };
++        cond_bg!(mark_style, self, selected, style);
++        cw.queue_char(mark_style, mark)?;
++        cw.queue_char(label_style, ' ')?;
++        Ok(0)
+     }
+ 
+     /// write the name or subpath, depending on the `pattern_object`
+@@ -642,7 +655,9 @@ impl<'a, 's, 't> DisplayableTree<'a, 's, 't> {
+ 
+                         Col::Count => self.write_line_count(cw, line, count_len, selected)?,
+ 
+-                        Col::Staged => Self::write_line_stage_mark(cw, &label_style, staged)?,
++                        Col::Staged => {
++                            self.write_line_stage_mark(cw, line, &label_style, selected)?
++                        }
+ 
+                         Col::Name => {
+                             in_branch = false;
+diff --git a/src/editor_state.rs b/src/editor_state.rs
+new file mode 100644
+index 0000000..4f310a7
+--- /dev/null
++++ b/src/editor_state.rs
+@@ -0,0 +1,50 @@
++use {
++    rustc_hash::FxHashMap,
++    std::{
++        fs,
++        path::{
++            Path,
++            PathBuf,
++        },
++    },
++};
++
++#[derive(Debug, Clone, Copy, PartialEq, Eq)]
++pub enum EditorBufferState {
++    Clean,
++    Modified,
++}
++
++#[derive(Debug, Clone, Default)]
++pub struct EditorStateSet {
++    states: FxHashMap<PathBuf, EditorBufferState>,
++}
++
++impl EditorStateSet {
++    pub fn from_file(path: &Path) -> Option<Self> {
++        let raw = fs::read_to_string(path).ok()?;
++        let mut states = FxHashMap::default();
++        for line in raw.lines() {
++            let Some((state, path)) = line.split_once('\t') else {
++                continue;
++            };
++            let state = match state {
++                "0" => EditorBufferState::Clean,
++                "1" => EditorBufferState::Modified,
++                _ => continue,
++            };
++            if path.is_empty() {
++                continue;
++            }
++            states.insert(PathBuf::from(path), state);
++        }
++        Some(Self { states })
++    }
++
++    pub fn state(
++        &self,
++        path: &Path,
++    ) -> Option<EditorBufferState> {
++        self.states.get(path).copied()
++    }
++}
+diff --git a/src/help/help_content.rs b/src/help/help_content.rs
+index e89a60e..7aba260 100644
+--- a/src/help/help_content.rs
++++ b/src/help/help_content.rs
+@@ -13,7 +13,7 @@ See **https://dystroy.org/broot** for a complete guide.
+ 
+ The *esc* key gets you back to the previous state.
+ The *↑* and *↓* arrow keys can be used to change selection.
+-The mouse can be used to select (on click) or open (on double-click).
++The mouse can be used to select (on click) or trigger the *enter* action (on double-click).
+ 
+ ## Search Modes
+ 
+diff --git a/src/lib.rs b/src/lib.rs
+index b684c27..e8613b7 100644
+--- a/src/lib.rs
++++ b/src/lib.rs
+@@ -9,6 +9,7 @@ pub mod conf;
+ pub mod content_search;
+ pub mod content_type;
+ pub mod display;
++pub mod editor_state;
+ pub mod errors;
+ pub mod file_sum;
+ pub mod flag;
+diff --git a/src/tree/tree_line.rs b/src/tree/tree_line.rs
+index 9060bc4..02de5d9 100644
+--- a/src/tree/tree_line.rs
++++ b/src/tree/tree_line.rs
+@@ -6,6 +6,7 @@ use {
+             Selection,
+             SelectionType,
+         },
++        editor_state::EditorBufferState,
+         errors::TreeBuildError,
+         file_sum::FileSum,
+         git::LineGitStatus,
+@@ -51,6 +52,7 @@ pub struct TreeLine {
+     pub sum: Option<FileSum>, // None when not measured
+     pub metadata: fs::Metadata,
+     pub git_status: Option<LineGitStatus>,
++    pub editor_state: Option<EditorBufferState>,
+ }
+ 
+ pub struct TreeLineBuilder {
+@@ -116,6 +118,7 @@ impl TreeLineBuilder {
+             sum: None,
+             metadata,
+             git_status: None,
++            editor_state: None,
+         })
+     }
+ }
+diff --git a/src/tree_build/builder.rs b/src/tree_build/builder.rs
+index 031f404..391392b 100644
+--- a/src/tree_build/builder.rs
++++ b/src/tree_build/builder.rs
+@@ -9,6 +9,7 @@ use {
+     },
+     crate::{
+         app::AppContext,
++        editor_state::EditorStateSet,
+         errors::TreeBuildError,
+         git::{
+             IgnoreChain,
+@@ -77,6 +78,7 @@ pub struct TreeBuilder<'c> {
+     total_search: bool,
+     git_ignorer: Ignorer,
+     line_status_computer: Option<LineStatusComputer>,
++    editor_state_set: Option<EditorStateSet>,
+     con: &'c AppContext,
+     pub matches_max: Option<usize>, // optional hard limit
+     trim_root: bool,
+@@ -104,6 +106,11 @@ impl<'c> TreeBuilder<'c> {
+         } else {
+             None
+         };
++        let editor_state_set = con
++            .launch_args
++            .editor_state_file
++            .as_ref()
++            .and_then(|path| EditorStateSet::from_file(path));
+         let root_id = BLine::from_root(&mut blines, path, root_ignore_chain, &options)?;
+         let trim_root = match (
+             options.trim_root,
+@@ -128,6 +135,7 @@ impl<'c> TreeBuilder<'c> {
+             total_search: true, // we'll set it to false if we don't look at all children
+             git_ignorer,
+             line_status_computer,
++            editor_state_set,
+             con,
+             trim_root,
+             matches_max: None,
+@@ -547,6 +555,11 @@ impl<'c> TreeBuilder<'c> {
+                 line.git_status = computer.line_status(&line.path);
+             }
+         }
++        if let Some(editor_state_set) = &self.editor_state_set {
++            for line in &mut tree.lines {
++                line.editor_state = editor_state_set.state(&line.path);
++            }
++        }
+         tree
+     }
+ 
+diff --git a/src/verb/verb_store.rs b/src/verb/verb_store.rs
+index b8bb413..be4fd88 100644
+--- a/src/verb/verb_store.rs
++++ b/src/verb/verb_store.rs
+@@ -668,6 +668,32 @@ impl VerbStore {
+         &self.verbs
+     }
+ 
++    pub fn key_verb(
++        &self,
++        key: KeyCombination,
++        sel_info: SelInfo<'_>,
++        panel_state_type: PanelStateType,
++    ) -> Option<&Verb> {
++        let extension = sel_info.extension();
++        for verb in &self.verbs {
++            if !verb.keys.contains(&key) {
++                continue;
++            }
++            if !sel_info.is_accepted_by(verb.selection_condition) {
++                continue;
++            }
++            if !verb.can_be_called_in_panel(panel_state_type) {
++                continue;
++            }
++            if !verb.accepts_extension(extension) {
++                continue;
++            }
++            debug!("verb for key: {}", &verb.execution);
++            return Some(verb);
++        }
++        None
++    }
++
+     pub fn verb(
+         &self,
+         id: VerbId,

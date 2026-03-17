@@ -6,7 +6,6 @@ SESSION_NAME="${CODEX_TMUX_SESSION:-codex}"
 WORKDIR="${WORKDIR:-$SCRIPT_ROOT}"
 MODEL="${MODEL:-gpt-5.4}"
 TMUX_CONFIG="${TMUX_CONFIG:-$SCRIPT_ROOT/.tmux/tmux.conf}"
-BROOT_PANE_WIDTH="${BROOT_PANE_WIDTH:-45}"
 BROOT_PREVIEW_PANE_PERCENT="${BROOT_PREVIEW_PANE_PERCENT:-35}"
 BROOT_PREVIEW_DIFF_MODE="${BROOT_PREVIEW_DIFF_MODE:-auto}"
 CODEX_NO_ALT_SCREEN="${CODEX_NO_ALT_SCREEN:-1}"
@@ -25,6 +24,8 @@ esac
 session_slug="$(printf '%s' "$SESSION_NAME" | tr -c 'A-Za-z0-9._-' '_')"
 runtime_dir="/tmp/codex-broot-$session_slug"
 selection_output="$runtime_dir/selection.txt"
+editor_state_file="$runtime_dir/editor-state.tsv"
+editor_socket="$runtime_dir/nvim.sock"
 
 tmux_cmd=(tmux -u -f "$TMUX_CONFIG")
 
@@ -47,8 +48,10 @@ broot_cmd=(
   HOME="$runtime_dir/home"
   BR_INSTALL=no
   XDG_CONFIG_HOME="$runtime_dir/xdg-config"
+  CODEX_BROOT_OPEN_SCRIPT="$SCRIPT_ROOT/bin/codex-open-in-vim"
   broot
   --selection-output "$selection_output"
+  --editor-state-file "$editor_state_file"
   -g
   --confine-root
   "$WORKDIR"
@@ -67,6 +70,9 @@ if ! "${tmux_cmd[@]}" has-session -t "$SESSION_NAME" 2>/dev/null; then
   mkdir -p "$runtime_dir"
   mkdir -p "$runtime_dir/home" "$runtime_dir/xdg-config"
   : > "$selection_output"
+  : > "$editor_state_file"
+  rm -f "$editor_socket"
+  "$SCRIPT_ROOT/bin/codex-prepare-broot-config" "$runtime_dir/xdg-config"
   "${tmux_cmd[@]}" new-session -d -s "$SESSION_NAME" -c "$WORKDIR" "${codex_cmd[@]}"
   "${tmux_cmd[@]}" rename-window -t "$SESSION_NAME:0" workspace
   "${tmux_cmd[@]}" set-option -t "$SESSION_NAME" remain-on-exit on
@@ -74,11 +80,14 @@ if ! "${tmux_cmd[@]}" has-session -t "$SESSION_NAME" 2>/dev/null; then
   "${tmux_cmd[@]}" set-option -t "$SESSION_NAME" @broot_workspace_dir "$WORKDIR"
   "${tmux_cmd[@]}" set-option -t "$SESSION_NAME" @broot_preview_diff_mode "$BROOT_PREVIEW_DIFF_MODE"
   "${tmux_cmd[@]}" set-option -t "$SESSION_NAME" @broot_selection_output "$selection_output"
+  "${tmux_cmd[@]}" set-option -t "$SESSION_NAME" @codex_pane_id "$("${tmux_cmd[@]}" display-message -p -t "$SESSION_NAME:workspace.0" '#{pane_id}')"
+  "${tmux_cmd[@]}" set-option -t "$SESSION_NAME" @codex_nvim_socket "$editor_socket"
+  "${tmux_cmd[@]}" set-option -t "$SESSION_NAME" @codex_nvim_state_file "$editor_state_file"
   broot_pane="$("${tmux_cmd[@]}" split-window -h -P -F '#{pane_id}' -t "$SESSION_NAME:workspace.0" -c "$WORKDIR" "${broot_cmd[@]}")"
-  "${tmux_cmd[@]}" resize-pane -t "$broot_pane" -x "$BROOT_PANE_WIDTH" 2>/dev/null || true
   preview_pane="$("${tmux_cmd[@]}" split-window -v -P -F '#{pane_id}' -p "$BROOT_PREVIEW_PANE_PERCENT" -t "$broot_pane" -c "$WORKDIR" "${preview_cmd[@]}")"
   "${tmux_cmd[@]}" set-option -t "$SESSION_NAME" @broot_pane_id "$broot_pane"
   "${tmux_cmd[@]}" set-option -t "$SESSION_NAME" @broot_preview_pane_id "$preview_pane"
+  "$SCRIPT_ROOT/bin/codex-layout" two-column "$SESSION_NAME"
   "${tmux_cmd[@]}" select-pane -t "$SESSION_NAME:workspace.0"
 fi
 

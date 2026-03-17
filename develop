@@ -74,7 +74,6 @@ exec docker run --rm -it \
   -e VISUAL=nvim \
   -e EDITOR=nvim \
   -e TERM="${TERM:-xterm-256color}" \
-  -e BROOT_PANE_WIDTH="${BROOT_PANE_WIDTH:-45}" \
   -e BROOT_PREVIEW_PANE_PERCENT="${BROOT_PREVIEW_PANE_PERCENT:-35}" \
   -e BROOT_PREVIEW_DIFF_MODE="${BROOT_PREVIEW_DIFF_MODE:-auto}" \
   -e MODEL="$MODEL" \
