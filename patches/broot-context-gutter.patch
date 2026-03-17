@@ -1,0 +1,162 @@
+diff --git a/src/context_gutter.rs b/src/context_gutter.rs
+new file mode 100644
+index 0000000..3057454
+--- /dev/null
++++ b/src/context_gutter.rs
+@@ -0,0 +1,16 @@
++use crate::editor_state::EditorBufferState;
++
++#[derive(Debug, Clone, Copy, PartialEq, Eq)]
++pub enum ContextGutterMark {
++    EditorClean,
++    EditorModified,
++}
++
++impl ContextGutterMark {
++    pub fn from_editor_state(state: EditorBufferState) -> Self {
++        match state {
++            EditorBufferState::Clean => Self::EditorClean,
++            EditorBufferState::Modified => Self::EditorModified,
++        }
++    }
++}
+diff --git a/src/lib.rs b/src/lib.rs
+index e8613b7..762ca80 100644
+--- a/src/lib.rs
++++ b/src/lib.rs
+@@ -6,6 +6,7 @@ pub mod browser;
+ pub mod cli;
+ pub mod command;
+ pub mod conf;
++pub mod context_gutter;
+ pub mod content_search;
+ pub mod content_type;
+ pub mod display;
+diff --git a/src/tree/tree_line.rs b/src/tree/tree_line.rs
+index 02de5d9..e69a46f 100644
+--- a/src/tree/tree_line.rs
++++ b/src/tree/tree_line.rs
+@@ -6,7 +6,7 @@ use {
+             Selection,
+             SelectionType,
+         },
+-        editor_state::EditorBufferState,
++        context_gutter::ContextGutterMark,
+         errors::TreeBuildError,
+         file_sum::FileSum,
+         git::LineGitStatus,
+@@ -52,7 +52,7 @@ pub struct TreeLine {
+     pub sum: Option<FileSum>, // None when not measured
+     pub metadata: fs::Metadata,
+     pub git_status: Option<LineGitStatus>,
+-    pub editor_state: Option<EditorBufferState>,
++    pub context_mark: Option<ContextGutterMark>,
+ }
+ 
+ pub struct TreeLineBuilder {
+@@ -118,7 +118,7 @@ impl TreeLineBuilder {
+             sum: None,
+             metadata,
+             git_status: None,
+-            editor_state: None,
++            context_mark: None,
+         })
+     }
+ }
+diff --git a/src/tree_build/builder.rs b/src/tree_build/builder.rs
+index 391392b..fe7d677 100644
+--- a/src/tree_build/builder.rs
++++ b/src/tree_build/builder.rs
+@@ -9,6 +9,7 @@ use {
+     },
+     crate::{
+         app::AppContext,
++        context_gutter::ContextGutterMark,
+         editor_state::EditorStateSet,
+         errors::TreeBuildError,
+         git::{
+@@ -557,7 +558,9 @@ impl<'c> TreeBuilder<'c> {
+         }
+         if let Some(editor_state_set) = &self.editor_state_set {
+             for line in &mut tree.lines {
+-                line.editor_state = editor_state_set.state(&line.path);
++                line.context_mark = editor_state_set
++                    .state(&line.path)
++                    .map(ContextGutterMark::from_editor_state);
+             }
+         }
+         tree
+diff --git a/src/display/col.rs b/src/display/col.rs
+index 1138394..b472af7 100644
+--- a/src/display/col.rs
++++ b/src/display/col.rs
+@@ -139,7 +139,7 @@ impl Col {
+             Col::Count => tree_options.show_counts,
+             Col::Branch => true,
+             //Col::Staged => app_state.map_or(false, |a| !a.stage.is_empty()),
+-            Col::Staged => tree.lines.iter().any(|line| line.editor_state.is_some()),
++            Col::Staged => tree.lines.iter().any(|line| line.context_mark.is_some()),
+             Col::Name => true,
+         }
+     }
+diff --git a/src/display/displayable_tree.rs b/src/display/displayable_tree.rs
+index eb36e99..aadee06 100644
+--- a/src/display/displayable_tree.rs
++++ b/src/display/displayable_tree.rs
+@@ -10,8 +10,8 @@ use {
+     },
+     crate::{
+         app::AppState,
++        context_gutter::ContextGutterMark,
+         content_search::ContentMatch,
+-        editor_state::EditorBufferState,
+         errors::ProgramError,
+         file_sum::FileSum,
+         pattern::PatternObject,
+@@ -315,25 +315,27 @@ impl<'a, 's, 't> DisplayableTree<'a, 's, 't> {
+         Ok(0)
+     }
+ 
+-    /// write the symbol showing whether the path is staged
+-    fn write_line_stage_mark<W: Write>(
++    /// write the fixed-width context gutter cell
++    fn write_line_context_mark<W: Write>(
+         &self,
+         cw: &mut CropWriter<W>,
+         line: &TreeLine,
+         label_style: &CompoundStyle,
+         selected: bool,
+     ) -> Result<usize, termimad::Error> {
+-        let Some(editor_state) = line.editor_state else {
+-            return Ok(1);
++        let Some(context_mark) = line.context_mark else {
++            cw.queue_char(label_style, ' ')?;
++            cw.queue_char(label_style, ' ')?;
++            return Ok(0);
+         };
+ 
+-        let style = match editor_state {
+-            EditorBufferState::Clean => &self.skin.git_status_current,
+-            EditorBufferState::Modified => &self.skin.git_status_modified,
++        let style = match context_mark {
++            ContextGutterMark::EditorClean => &self.skin.git_status_current,
++            ContextGutterMark::EditorModified => &self.skin.git_status_modified,
+         };
+-        let mark = match editor_state {
+-            EditorBufferState::Clean => '=',
+-            EditorBufferState::Modified => '*',
++        let mark = match context_mark {
++            ContextGutterMark::EditorClean => '=',
++            ContextGutterMark::EditorModified => '*',
+         };
+         cond_bg!(mark_style, self, selected, style);
+         cw.queue_char(mark_style, mark)?;
+@@ -656,7 +658,7 @@ impl<'a, 's, 't> DisplayableTree<'a, 's, 't> {
+                         Col::Count => self.write_line_count(cw, line, count_len, selected)?,
+ 
+                         Col::Staged => {
+-                            self.write_line_stage_mark(cw, line, &label_style, selected)?
++                            self.write_line_context_mark(cw, line, &label_style, selected)?
+                         }
+ 
+                         Col::Name => {

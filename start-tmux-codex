@@ -58,13 +58,21 @@ broot_cmd=(
   --cmd ":toggle_watch"
 )
 
-preview_cmd=(
-  bash
-  "$SCRIPT_ROOT/bin/broot-preview-pane"
-  --watch-selection "$selection_output"
-  --base-dir "$WORKDIR"
-  --diff-mode "$BROOT_PREVIEW_DIFF_MODE"
-)
+preview_env=()
+for preview_var in \
+  BROOT_PREVIEW_POLL_INTERVAL \
+  BROOT_PREVIEW_MAX_TEXT_LINES \
+  BROOT_PREVIEW_MAX_DIFF_LINES \
+  BROOT_PREVIEW_MAX_LIST_LINES \
+  BROOT_PREVIEW_MAX_HEX_LINES \
+  BROOT_PREVIEW_MAX_GIT_STATUS_LINES \
+  BROOT_PREVIEW_HUGE_FILE_BYTES \
+  BROOT_PREVIEW_MAX_HEX_BYTES
+do
+  if [ -n "${!preview_var+x}" ]; then
+    preview_env+=("${preview_var}=${!preview_var}")
+  fi
+done
 
 if ! "${tmux_cmd[@]}" has-session -t "$SESSION_NAME" 2>/dev/null; then
   mkdir -p "$runtime_dir"
@@ -84,9 +92,21 @@ if ! "${tmux_cmd[@]}" has-session -t "$SESSION_NAME" 2>/dev/null; then
   "${tmux_cmd[@]}" set-option -t "$SESSION_NAME" @codex_nvim_socket "$editor_socket"
   "${tmux_cmd[@]}" set-option -t "$SESSION_NAME" @codex_nvim_state_file "$editor_state_file"
   broot_pane="$("${tmux_cmd[@]}" split-window -h -P -F '#{pane_id}' -t "$SESSION_NAME:workspace.0" -c "$WORKDIR" "${broot_cmd[@]}")"
-  preview_pane="$("${tmux_cmd[@]}" split-window -v -P -F '#{pane_id}' -p "$BROOT_PREVIEW_PANE_PERCENT" -t "$broot_pane" -c "$WORKDIR" "${preview_cmd[@]}")"
+  preview_pane="$("${tmux_cmd[@]}" split-window -v -P -F '#{pane_id}' -p "$BROOT_PREVIEW_PANE_PERCENT" -t "$broot_pane" -c "$WORKDIR" 'tail -f /dev/null')"
   "${tmux_cmd[@]}" set-option -t "$SESSION_NAME" @broot_pane_id "$broot_pane"
   "${tmux_cmd[@]}" set-option -t "$SESSION_NAME" @broot_preview_pane_id "$preview_pane"
+  preview_watch_cmd=(
+    env
+    "${preview_env[@]}"
+    bash
+    "$SCRIPT_ROOT/bin/broot-preview-pane"
+    --watch-selection "$selection_output"
+    --target-pane "$preview_pane"
+    --base-dir "$WORKDIR"
+    --diff-mode "$BROOT_PREVIEW_DIFF_MODE"
+  )
+  printf -v preview_watch_shell '%q ' "${preview_watch_cmd[@]}"
+  "${tmux_cmd[@]}" run-shell -b "$preview_watch_shell"
   "$SCRIPT_ROOT/bin/codex-layout" two-column "$SESSION_NAME"
   "${tmux_cmd[@]}" select-pane -t "$SESSION_NAME:workspace.0"
 fi

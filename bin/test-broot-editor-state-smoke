@@ -43,6 +43,17 @@ capture_pane() {
   last_capture="$("${tmux_cmd[@]}" capture-pane -p -t "$TMUX_SESSION_NAME:0.0" -S -200 2>/dev/null || true)"
 }
 
+file_name_column() {
+  local file_name="$1"
+
+  printf '%s\n' "$last_capture" | awk -v needle="$file_name" '
+    index($0, needle) {
+      print index($0, needle)
+      exit
+    }
+  '
+}
+
 pane_dead() {
   "${tmux_cmd[@]}" display-message -p -t "$TMUX_SESSION_NAME:0.0" '#{pane_dead}' 2>/dev/null || printf '1\n'
 }
@@ -89,6 +100,23 @@ fail_with_capture() {
   exit 1
 }
 
+assert_aligned_file_columns() {
+  local marked_file="$1"
+  local unmarked_file="$2"
+  local marked_column=""
+  local unmarked_column=""
+
+  capture_pane
+  marked_column="$(file_name_column "$marked_file")"
+  unmarked_column="$(file_name_column "$unmarked_file")"
+  if [ -z "$marked_column" ] || [ -z "$unmarked_column" ] || [ "$marked_column" != "$unmarked_column" ]; then
+    printf 'expected aligned file columns for %s and %s\n' "$marked_file" "$unmarked_file" >&2
+    printf 'marked column: %s\n' "${marked_column:-<missing>}" >&2
+    printf 'unmarked column: %s\n' "${unmarked_column:-<missing>}" >&2
+    fail_with_capture 'context gutter width shifted the filename column'
+  fi
+}
+
 launch_tmux() {
   mkdir -p "$repo_root" "$home_dir" "$xdg_config_home"
   printf 'alpha\n' >"$repo_root/alpha.txt"
@@ -115,11 +143,13 @@ printf '0\t%s\n' "$repo_root/alpha.txt" >"$editor_state_file"
 if ! wait_for_regex '=[[:space:]]+alpha\.txt'; then
   fail_with_capture 'clean editor marker never appeared in broot'
 fi
+assert_aligned_file_columns 'alpha.txt' 'beta.txt'
 
 printf '1\t%s\n' "$repo_root/alpha.txt" >"$editor_state_file"
 if ! wait_for_regex '\*[[:space:]]+alpha\.txt'; then
   fail_with_capture 'modified editor marker never appeared in broot'
 fi
+assert_aligned_file_columns 'alpha.txt' 'beta.txt'
 
 : >"$editor_state_file"
 if ! wait_for_absent_regex '[=*][[:space:]]+alpha\.txt'; then

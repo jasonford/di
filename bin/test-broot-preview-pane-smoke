@@ -39,6 +39,14 @@ pane_dead() {
   "${tmux_cmd[@]}" display-message -p -t "$preview_pane" "#{pane_dead}" 2>/dev/null || printf '1\n'
 }
 
+pane_current_command() {
+  "${tmux_cmd[@]}" display-message -p -t "$preview_pane" '#{pane_current_command}' 2>/dev/null || true
+}
+
+pane_current_path() {
+  "${tmux_cmd[@]}" display-message -p -t "$preview_pane" '#{pane_current_path}' 2>/dev/null || true
+}
+
 wait_for_regex() {
   local expected_regex="$1"
   local timeout_seconds="${2:-8}"
@@ -77,6 +85,46 @@ wait_for_history_regex() {
 
   capture_history
   printf '%s\n' "$last_capture" | grep -Eq "$expected_regex"
+}
+
+wait_for_command() {
+  local expected="$1"
+  local timeout_seconds="${2:-8}"
+  local deadline=$((SECONDS + timeout_seconds))
+  local actual=""
+
+  while (( SECONDS < deadline )); do
+    actual="$(pane_current_command)"
+    if [ "$actual" = "$expected" ]; then
+      return 0
+    fi
+    if [[ "$(pane_dead)" == "1" ]]; then
+      return 1
+    fi
+    sleep 0.1
+  done
+
+  [ "$actual" = "$expected" ]
+}
+
+wait_for_path() {
+  local expected="$1"
+  local timeout_seconds="${2:-8}"
+  local deadline=$((SECONDS + timeout_seconds))
+  local actual=""
+
+  while (( SECONDS < deadline )); do
+    actual="$(pane_current_path)"
+    if [ "$actual" = "$expected" ]; then
+      return 0
+    fi
+    if [[ "$(pane_dead)" == "1" ]]; then
+      return 1
+    fi
+    sleep 0.1
+  done
+
+  [ "$actual" = "$expected" ]
 }
 
 fail_with_capture() {
@@ -143,7 +191,14 @@ launch_tmux() {
   "${tmux_cmd[@]}" new-session -d -s "$TMUX_SESSION_NAME" -x 120 -y 20 'bash'
   "${tmux_cmd[@]}" set-option -t "$TMUX_SESSION_NAME" @broot_preview_diff_mode auto
   preview_pane="$("${tmux_cmd[@]}" split-window -d -P -F '#{pane_id}' -p 40 -t "$TMUX_SESSION_NAME:0.0" -c "$repo_root" \
-    bash "$SCRIPT_ROOT/bin/broot-preview-pane" --watch-selection "$selection_file" --base-dir "$repo_root" --poll-interval 0.02)"
+    'tail -f /dev/null')"
+  printf -v preview_watch_cmd '%q ' \
+    bash "$SCRIPT_ROOT/bin/broot-preview-pane" \
+    --watch-selection "$selection_file" \
+    --target-pane "$preview_pane" \
+    --base-dir "$repo_root" \
+    --poll-interval 0.02
+  "${tmux_cmd[@]}" run-shell -b "$preview_watch_cmd"
 }
 
 require_command git
@@ -208,14 +263,28 @@ if ! wait_for_regex 'Hex Preview'; then
 fi
 
 set_selection "$repo_root/sub dir"
-if ! wait_for_regex 'Directory'; then
-  fail_with_capture 'directory preview never rendered a directory summary'
+if ! wait_for_regex 'sub dir[$#]'; then
+  fail_with_capture 'directory preview prompt did not switch to the selected directory'
 fi
-if ! wait_for_regex 'space name\.txt'; then
-  fail_with_capture 'directory preview missing child entry'
+if ! wait_for_command 'bash'; then
+  fail_with_capture 'directory preview did not respawn into bash'
+fi
+if ! wait_for_path "$repo_root/sub dir"; then
+  fail_with_capture 'directory preview pane did not switch to the selected directory'
 fi
 
 set_selection "$repo_root/clean.py"
+if ! wait_for_regex 'clean\.py'; then
+  fail_with_capture 'directory preview did not switch back to a file preview'
+fi
+if ! wait_for_command 'tail'; then
+  fail_with_capture 'file preview did not return the pane to the static hold state'
+fi
+capture_history
+if printf '%s\n' "$last_capture" | grep -Eq 'sub dir[$#]'; then
+  fail_with_capture 'directory shell prompt remained in pane history after switching back to a file preview'
+fi
+
 sleep 0.02
 set_selection "$repo_root/tracked.txt"
 if ! wait_for_history_regex 'tracked\.txt'; then

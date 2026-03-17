@@ -1,9 +1,13 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+script_path="$script_dir/$(basename "${BASH_SOURCE[0]}")"
 selection_file=""
 selected_path=""
 base_dir="${PWD}"
+target_pane="${TMUX_PANE:-}"
+path_mode=0
 watch_mode=0
 
 poll_interval="${BROOT_PREVIEW_POLL_INTERVAL:-0.05}"
@@ -24,8 +28,9 @@ usage:
   broot-preview-pane --path <selected-path> [options]
 
 options:
-  --watch-selection <file>   poll a selection file and render updates in-place
+  --watch-selection <file>   poll a selection file and control a target pane
   --path <selected-path>     render a single path and exit
+  --target-pane <pane-id>    tmux pane to control in watch mode
   --base-dir <dir>           resolve relative selected paths against this directory
   --diff-mode <auto|unstaged|staged>
   --poll-interval <seconds>  selection polling interval in watch mode
@@ -53,10 +58,11 @@ choose_delta() {
 }
 
 pane_width() {
+  local pane="${1:-$target_pane}"
   local width=""
 
-  if [ -n "${TMUX_PANE:-}" ] && command -v tmux >/dev/null 2>&1; then
-    width="$(tmux display-message -p -t "$TMUX_PANE" '#{pane_width}' 2>/dev/null || true)"
+  if [ -n "$pane" ] && command -v tmux >/dev/null 2>&1; then
+    width="$(tmux display-message -p -t "$pane" '#{pane_width}' 2>/dev/null || true)"
     if [[ "$width" =~ ^[0-9]+$ ]] && [ "$width" -gt 20 ]; then
       printf '%s\n' "$width"
       return
@@ -72,10 +78,11 @@ pane_width() {
 }
 
 current_diff_mode() {
+  local pane="${1:-$target_pane}"
   local session_mode=""
 
-  if [ -n "${TMUX_PANE:-}" ] && command -v tmux >/dev/null 2>&1; then
-    session_mode="$(tmux display-message -p -t "$TMUX_PANE" '#{@broot_preview_diff_mode}' 2>/dev/null || true)"
+  if [ -n "$pane" ] && command -v tmux >/dev/null 2>&1; then
+    session_mode="$(tmux display-message -p -t "$pane" '#{@broot_preview_diff_mode}' 2>/dev/null || true)"
     case "$session_mode" in
       auto|unstaged|staged)
         printf '%s\n' "$session_mode"
@@ -87,9 +94,17 @@ current_diff_mode() {
   printf '%s\n' "$diff_mode"
 }
 
+clear_tmux_history() {
+  local pane="$1"
+
+  if [ -n "$pane" ] && command -v tmux >/dev/null 2>&1; then
+    tmux clear-history -t "$pane" >/dev/null 2>&1 || true
+  fi
+}
+
 reset_pane_state() {
   if [ -n "${TMUX_PANE:-}" ] && command -v tmux >/dev/null 2>&1; then
-    tmux clear-history -t "$TMUX_PANE" >/dev/null 2>&1 || true
+    clear_tmux_history "$TMUX_PANE"
     printf '\033[H\033[2J\033[3J'
     return
   fi
@@ -274,6 +289,46 @@ print_header() {
   printf '\n'
 }
 
+prompt_user() {
+  id -un 2>/dev/null || printf '%s' "${USER:-dev}"
+}
+
+prompt_host() {
+  hostname -s 2>/dev/null || hostname 2>/dev/null || printf 'host'
+}
+
+prompt_path() {
+  local path="$1"
+  local home_dir="${HOME:-}"
+
+  if [ -n "$home_dir" ]; then
+    if [ "$path" = "$home_dir" ]; then
+      printf '~'
+      return
+    fi
+    case "$path" in
+      "$home_dir"/*)
+        printf '~/%s' "${path#"$home_dir"/}"
+        return
+        ;;
+    esac
+  fi
+
+  printf '%s' "$path"
+}
+
+prompt_symbol() {
+  local uid="1"
+
+  uid="$(id -u 2>/dev/null || printf '1')"
+  if [ "$uid" -eq 0 ]; then
+    printf '#'
+    return
+  fi
+
+  printf '$'
+}
+
 render_empty() {
   print_header "Preview" "No selection"
   printf 'Move the broot cursor to update this pane.\n'
@@ -297,37 +352,18 @@ render_special() {
 
 render_directory() {
   local path="$1"
-  local repo_root="$2"
-  local rel_path="$3"
-  local size_bytes=""
-  local size_human=""
-  local entry_count=""
-  local git_status=""
+  local user_name=""
+  local host_name=""
+  local cwd_display=""
+  local symbol=""
 
-  size_bytes="$(du -sb -- "$path" 2>/dev/null | awk '{print $1}' || printf '0')"
-  size_human="$(human_size "${size_bytes:-0}")"
-  entry_count="$(find "$path" -mindepth 1 -maxdepth 1 2>/dev/null | wc -l | tr -d ' ')"
+  user_name="$(prompt_user)"
+  host_name="$(prompt_host)"
+  cwd_display="$(prompt_path "$path")"
+  symbol="$(prompt_symbol)"
 
-  print_header "$path" "Directory • ${entry_count:-0} entries • ${size_human}"
-
-  if [ -n "$repo_root" ] && [ -n "$rel_path" ]; then
-    git_status="$(
-      git -C "$repo_root" \
-        -c color.status=always \
-        -c core.quotepath=false \
-        status --short --untracked-files=all -- "$rel_path" 2>/dev/null | limit_stream "$max_git_status_lines"
-    )"
-    if [ -n "$git_status" ]; then
-      printf '\033[1mGit Status\033[0m\n'
-      printf '%s\n\n' "$git_status"
-    fi
-  fi
-
-  printf '\033[1mEntries\033[0m\n'
-  LC_ALL=C ls -la --group-directories-first --color=always --time-style=long-iso -- "$path" \
-    | sed '1d' \
-    | nl -ba -w 3 -s ' ' \
-    | limit_stream "$max_list_lines"
+  print_header "$path" "Shell prompt"
+  printf '%s@%s:%s%s ' "$user_name" "$host_name" "$cwd_display" "$symbol"
 }
 
 render_text() {
@@ -524,12 +560,70 @@ render_preview() {
   render_binary "$resolved_path" "$repo_root" "$rel_path"
 }
 
+build_static_preview_command() {
+  local raw_path="$1"
+  local request_base_dir="$2"
+  local request_diff_mode="$3"
+  local preview_cmd=(
+    env
+    "BROOT_PREVIEW_MAX_TEXT_LINES=$max_text_lines"
+    "BROOT_PREVIEW_MAX_DIFF_LINES=$max_diff_lines"
+    "BROOT_PREVIEW_MAX_LIST_LINES=$max_list_lines"
+    "BROOT_PREVIEW_MAX_HEX_LINES=$max_hex_lines"
+    "BROOT_PREVIEW_MAX_GIT_STATUS_LINES=$max_git_status_lines"
+    "BROOT_PREVIEW_HUGE_FILE_BYTES=$huge_file_bytes"
+    "BROOT_PREVIEW_MAX_HEX_BYTES=$max_hex_bytes"
+    bash
+    "$script_path"
+    --path "$raw_path"
+    --base-dir "$request_base_dir"
+    --diff-mode "$request_diff_mode"
+  )
+  local inner_cmd=""
+  local respawn_cmd=""
+
+  printf -v inner_cmd '%q ' "${preview_cmd[@]}"
+  inner_cmd+='; exec tail -f /dev/null'
+  printf -v respawn_cmd 'bash -lc %q' "$inner_cmd"
+  printf '%s\n' "$respawn_cmd"
+}
+
+spawn_static_preview() {
+  local pane="$1"
+  local raw_path="$2"
+  local request_base_dir="$3"
+  local request_diff_mode="$4"
+  local respawn_cmd=""
+
+  respawn_cmd="$(build_static_preview_command "$raw_path" "$request_base_dir" "$request_diff_mode")"
+  clear_tmux_history "$pane"
+  tmux respawn-pane -k -t "$pane" -c "$request_base_dir" "$respawn_cmd" >/dev/null
+}
+
+spawn_directory_shell() {
+  local pane="$1"
+  local path="$2"
+  local inner_cmd='export PS1="\\u@\\h:\\w\\$ "; exec bash --noprofile --norc -i'
+  local respawn_cmd=""
+
+  printf -v respawn_cmd 'bash -lc %q' "$inner_cmd"
+  clear_tmux_history "$pane"
+  tmux respawn-pane -k -t "$pane" -c "$path" "$respawn_cmd" >/dev/null
+}
+
 watch_selection_updates() {
   local last_marker="__uninitialized__"
   local current_raw=""
   local current_mode=""
   local current_width=""
+  local resolved_path=""
+  local selection_kind=""
   local marker=""
+
+  if [ -z "$target_pane" ]; then
+    printf 'watch mode requires a tmux target pane\n' >&2
+    exit 1
+  fi
 
   while true; do
     current_raw=""
@@ -537,11 +631,23 @@ watch_selection_updates() {
       IFS= read -r current_raw < "$selection_file" || true
     fi
 
-    current_mode="$(current_diff_mode)"
-    current_width="$(pane_width)"
-    marker="${current_raw}"$'\n'"${current_mode}"$'\n'"${current_width}"
+    resolved_path="$(resolve_path "$current_raw" "$base_dir")"
+    if [ -n "$resolved_path" ] && [ -d "$resolved_path" ] && [ -r "$resolved_path" ]; then
+      selection_kind="directory"
+      marker="${selection_kind}"$'\n'"${resolved_path}"
+    else
+      selection_kind="static"
+      current_mode="$(current_diff_mode "$target_pane")"
+      current_width="$(pane_width "$target_pane")"
+      marker="${selection_kind}"$'\n'"${current_raw}"$'\n'"${current_mode}"$'\n'"${current_width}"
+    fi
+
     if [ "$marker" != "$last_marker" ]; then
-      render_preview "$current_raw" "$base_dir" "$current_mode" "$current_width"
+      if [ "$selection_kind" = "directory" ]; then
+        spawn_directory_shell "$target_pane" "$resolved_path"
+      else
+        spawn_static_preview "$target_pane" "$current_raw" "$base_dir" "$current_mode"
+      fi
       last_marker="$marker"
     fi
 
@@ -563,7 +669,16 @@ while [ "$#" -gt 0 ]; do
       shift 2
       ;;
     --path)
-      selected_path="${2:?missing value for --path}"
+      if [ "$#" -lt 2 ]; then
+        printf 'missing value for --path\n' >&2
+        exit 1
+      fi
+      selected_path="$2"
+      path_mode=1
+      shift 2
+      ;;
+    --target-pane)
+      target_pane="${2:?missing value for --target-pane}"
       shift 2
       ;;
     --base-dir)
@@ -608,7 +723,7 @@ if [ "$watch_mode" -eq 1 ]; then
   exit 0
 fi
 
-if [ -z "$selected_path" ]; then
+if [ "$path_mode" -eq 0 ]; then
   printf 'missing required --path when not using --watch-selection\n' >&2
   usage >&2
   exit 1
