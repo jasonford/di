@@ -17,11 +17,13 @@ COPY patches/broot-git-watch-and-inline-stats.patch /tmp/broot-git-watch-and-inl
 COPY patches/broot-confine-root.patch /tmp/broot-confine-root.patch
 COPY patches/broot-editor-pane-integration.patch /tmp/broot-editor-pane-integration.patch
 COPY patches/broot-context-gutter.patch /tmp/broot-context-gutter.patch
+COPY patches/broot-git-context-gutter-layout.patch /tmp/broot-git-context-gutter-layout.patch
 RUN git apply /tmp/broot-selection-output.patch \
   && git apply /tmp/broot-git-watch-and-inline-stats.patch \
   && git apply /tmp/broot-confine-root.patch \
   && git apply /tmp/broot-editor-pane-integration.patch \
   && git apply /tmp/broot-context-gutter.patch \
+  && git apply /tmp/broot-git-context-gutter-layout.patch \
   && cargo build --release --locked
 
 FROM node:22-bookworm-slim

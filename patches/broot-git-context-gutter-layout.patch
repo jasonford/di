@@ -1,0 +1,310 @@
+diff --git a/src/display/col.rs b/src/display/col.rs
+index b472af7..6db474c 100644
+--- a/src/display/col.rs
++++ b/src/display/col.rs
+@@ -57,8 +57,8 @@ pub static DEFAULT_COLS: Cols = [
+     Col::Date,
+     Col::Permission,
+     Col::Count,
+-    Col::Branch,
+     Col::Staged,
++    Col::Branch,
+     Col::Name,
+ ];
+ 
+@@ -131,7 +131,7 @@ impl Col {
+         let tree_options = &tree.options;
+         match self {
+             Col::Mark => tree_options.show_selection_mark,
+-            Col::Git => tree.git_status.is_some(),
++            Col::Git => false,
+             Col::DeviceId => tree_options.show_device_id,
+             Col::Size => tree_options.show_sizes,
+             Col::Date => tree_options.show_dates,
+@@ -139,7 +139,10 @@ impl Col {
+             Col::Count => tree_options.show_counts,
+             Col::Branch => true,
+             //Col::Staged => app_state.map_or(false, |a| !a.stage.is_empty()),
+-            Col::Staged => tree.lines.iter().any(|line| line.context_mark.is_some()),
++            Col::Staged => tree
++                .lines
++                .iter()
++                .any(|line| line.context_mark.is_some() || line.git_status.is_some()),
+             Col::Name => true,
+         }
+     }
+diff --git a/src/display/displayable_tree.rs b/src/display/displayable_tree.rs
+index aadee06..19a9146 100644
+--- a/src/display/displayable_tree.rs
++++ b/src/display/displayable_tree.rs
+@@ -3,7 +3,6 @@ use {
+         BRANCH_FILLING,
+         Col,
+         CropWriter,
+-        GitStatusDisplay,
+         MatchedString,
+         SPACE_FILLING,
+         num_format::format_count,
+@@ -218,13 +217,11 @@ impl<'a, 's, 't> DisplayableTree<'a, 's, 't> {
+         })
+     }
+ 
+-    fn write_line_git_status<W: Write>(
++    fn line_git_status_display(
+         &self,
+-        cw: &mut CropWriter<W>,
+         line: &TreeLine,
+-        selected: bool,
+-    ) -> Result<usize, termimad::Error> {
+-        let (style, char) = if !line.is_selectable() {
++    ) -> (&CompoundStyle, char) {
++        if !line.is_selectable() {
+             (&self.skin.tree, ' ')
+         } else {
+             match line.git_status.and_then(|status| status.display_status()) {
+@@ -236,31 +233,28 @@ impl<'a, 's, 't> DisplayableTree<'a, 's, 't> {
+                 None => (&self.skin.tree, ' '),
+                 _ => (&self.skin.git_status_other, '?'),
+             }
+-        };
+-        cond_bg!(git_style, self, selected, style);
+-        cw.queue_char(git_style, char)?;
+-        Ok(0)
++        }
+     }
+ 
+-    fn write_line_diff_stats<W: Write>(
++    fn write_line_git_status<W: Write>(
+         &self,
+         cw: &mut CropWriter<W>,
+         line: &TreeLine,
+         selected: bool,
+-    ) -> Result<(), ProgramError> {
+-        let Some(diff_stats) = line
++    ) -> Result<usize, termimad::Error> {
++        let (style, char) = self.line_git_status_display(line);
++        cond_bg!(git_style, self, selected, style);
++        cw.queue_char(git_style, char)?;
++        Ok(0)
++    }
++
++    fn line_diff_stats_width(line: &TreeLine) -> usize {
++        line
+             .git_status
+             .and_then(|git_status| git_status.diff_stats)
+             .filter(|diff_stats| diff_stats.has_changes())
+-        else {
+-            return Ok(());
+-        };
+-        cond_bg!(insertions_style, self, selected, self.skin.git_insertions);
+-        cond_bg!(deletions_style, self, selected, self.skin.git_deletions);
+-        cw.queue_char(insertions_style, ' ')?;
+-        cw.queue_g_string(insertions_style, format!("+{}", diff_stats.insertions))?;
+-        cw.queue_g_string(deletions_style, format!("-{}", diff_stats.deletions))?;
+-        Ok(())
++            .map(|diff_stats| format!("+{}-{}", diff_stats.insertions, diff_stats.deletions).len())
++            .unwrap_or(0)
+     }
+ 
+     fn write_date<W: Write>(
+@@ -322,27 +316,104 @@ impl<'a, 's, 't> DisplayableTree<'a, 's, 't> {
+         line: &TreeLine,
+         label_style: &CompoundStyle,
+         selected: bool,
++        show_git: bool,
++        stats_width: usize,
+     ) -> Result<usize, termimad::Error> {
+-        let Some(context_mark) = line.context_mark else {
+-            cw.queue_char(label_style, ' ')?;
++        if !show_git {
++            let Some(context_mark) = line.context_mark else {
++                cw.queue_char(label_style, ' ')?;
++                cw.queue_char(label_style, ' ')?;
++                return Ok(0);
++            };
++
++            let style = match context_mark {
++                ContextGutterMark::EditorClean => &self.skin.git_status_current,
++                ContextGutterMark::EditorModified => &self.skin.git_status_modified,
++            };
++            let mark = match context_mark {
++                ContextGutterMark::EditorClean => '=',
++                ContextGutterMark::EditorModified => '*',
++            };
++            cond_bg!(mark_style, self, selected, style);
++            cw.queue_char(mark_style, mark)?;
++            cw.queue_char(label_style, ' ')?;
++            return Ok(0);
++        }
++
++        let (git_style_ref, git_char) = self.line_git_status_display(line);
++        cond_bg!(git_style, self, selected, git_style_ref);
++        cw.queue_char(git_style, git_char)?;
++        cw.queue_char(label_style, ' ')?;
++
++        if let Some(diff_stats) = line
++            .git_status
++            .and_then(|git_status| git_status.diff_stats)
++            .filter(|diff_stats| diff_stats.has_changes())
++        {
++            let stats_len = Self::line_diff_stats_width(line);
++            cond_bg!(insertions_style, self, selected, self.skin.git_insertions);
++            cond_bg!(deletions_style, self, selected, self.skin.git_deletions);
++            cw.queue_g_string(insertions_style, format!("+{}", diff_stats.insertions))?;
++            cw.queue_g_string(deletions_style, format!("-{}", diff_stats.deletions))?;
++            cw.repeat(
++                label_style,
++                &SPACE_FILLING,
++                stats_width.saturating_sub(stats_len),
++            )?;
++        } else {
++            cw.repeat(label_style, &SPACE_FILLING, stats_width)?;
++        }
++
++        cw.queue_char(label_style, ' ')?;
++
++        if let Some(context_mark) = line.context_mark {
++            let style = match context_mark {
++                ContextGutterMark::EditorClean => &self.skin.git_status_current,
++                ContextGutterMark::EditorModified => &self.skin.git_status_modified,
++            };
++            let mark = match context_mark {
++                ContextGutterMark::EditorClean => '=',
++                ContextGutterMark::EditorModified => '*',
++            };
++            cond_bg!(mark_style, self, selected, style);
++            cw.queue_char(mark_style, mark)?;
++        } else {
+             cw.queue_char(label_style, ' ')?;
+-            return Ok(0);
+-        };
++        }
+ 
+-        let style = match context_mark {
+-            ContextGutterMark::EditorClean => &self.skin.git_status_current,
+-            ContextGutterMark::EditorModified => &self.skin.git_status_modified,
+-        };
+-        let mark = match context_mark {
+-            ContextGutterMark::EditorClean => '=',
+-            ContextGutterMark::EditorModified => '*',
+-        };
+-        cond_bg!(mark_style, self, selected, style);
+-        cw.queue_char(mark_style, mark)?;
+         cw.queue_char(label_style, ' ')?;
+         Ok(0)
+     }
+ 
++    fn write_root_branch<W: Write>(
++        &self,
++        cw: &mut CropWriter<W>,
++        selected: bool,
++    ) -> Result<(), ProgramError> {
++        let ComputationResult::Done(git_status) = &self.tree.git_status else {
++            return Ok(());
++        };
++        let Some(branch) = &git_status.current_branch_name else {
++            return Ok(());
++        };
++        let branch_width = branch.chars().count();
++        if branch_width >= cw.allowed {
++            return Ok(());
++        }
++        let wide_prefix = branch_width + 3 < cw.allowed;
++        cond_bg!(branch_style, self, selected, self.skin.git_branch);
++        if wide_prefix {
++            cw.queue_str(branch_style, " ᚜ ")?;
++        } else {
++            cw.queue_char(branch_style, ' ')?;
++        }
++        cw.queue_str(branch_style, branch)?;
++        if !cw.is_full() {
++            cw.queue_char(branch_style, ' ')?;
++        }
++        Ok(())
++    }
++
+     /// write the name or subpath, depending on the `pattern_object`
+     fn write_line_label<W: Write>(
+         &self,
+@@ -417,7 +488,6 @@ impl<'a, 's, 't> DisplayableTree<'a, 's, 't> {
+             }
+             _ => {}
+         }
+-        self.write_line_diff_stats(cw, line, selected)?;
+         Ok(1)
+     }
+ 
+@@ -447,6 +517,9 @@ impl<'a, 's, 't> DisplayableTree<'a, 's, 't> {
+         &self,
+         cw: &mut CropWriter<W>,
+         selected: bool,
++        show_context_gutter: bool,
++        show_git: bool,
++        stats_width: usize,
+     ) -> Result<(), ProgramError> {
+         cond_bg!(style, self, selected, self.skin.directory);
+         let line = &self.tree.lines[0];
+@@ -455,6 +528,9 @@ impl<'a, 's, 't> DisplayableTree<'a, 's, 't> {
+                 cw.queue_g_string(style, format!("{:>4} ", file_size::fit_4(s.to_size())))?;
+             }
+         }
++        if show_context_gutter {
++            self.write_line_context_mark(cw, line, &style, selected, show_git, stats_width)?;
++        }
+         let title = line.path.to_string_lossy();
+         let title_len = UnicodeWidthStr::width(title.as_ref());
+         if title_len > cw.allowed {
+@@ -478,10 +554,7 @@ impl<'a, 's, 't> DisplayableTree<'a, 's, 't> {
+         }
+ 
+         if self.in_app && !cw.is_full() {
+-            if let ComputationResult::Done(git_status) = &self.tree.git_status {
+-                let git_status_display = GitStatusDisplay::from(git_status, self.skin, cw.allowed);
+-                git_status_display.write(cw, selected)?;
+-            }
++            self.write_root_branch(cw, selected)?;
+             #[cfg(any(target_os = "macos", target_os = "linux", target_os = "windows"))]
+             if self.tree.options.show_root_fs {
+                 if let Some(mount) = line.mount() {
+@@ -536,8 +609,24 @@ impl<'a, 's, 't> DisplayableTree<'a, 's, 't> {
+             f.queue(cursor::MoveTo(self.area.left, self.area.top))?;
+         }
+         let mut cw = CropWriter::new(f, self.area.width as usize);
++        let show_context_gutter = tree
++            .lines
++            .iter()
++            .any(|line| line.context_mark.is_some() || line.git_status.is_some());
++        let show_git_context = tree.lines.iter().any(|line| line.git_status.is_some());
++        let context_gutter_stats_width = if show_git_context {
++            tree.lines.iter().map(Self::line_diff_stats_width).max().unwrap_or(0)
++        } else {
++            0
++        };
+         let pattern_object = tree.options.pattern.pattern.object();
+-        self.write_root_line(&mut cw, self.in_app && tree.selection == 0)?;
++        self.write_root_line(
++            &mut cw,
++            self.in_app && tree.selection == 0,
++            show_context_gutter,
++            show_git_context,
++            context_gutter_stats_width,
++        )?;
+         self.skin.queue_reset(f)?;
+ 
+         let visible_cols: Vec<Col> = tree
+@@ -658,7 +747,14 @@ impl<'a, 's, 't> DisplayableTree<'a, 's, 't> {
+                         Col::Count => self.write_line_count(cw, line, count_len, selected)?,
+ 
+                         Col::Staged => {
+-                            self.write_line_context_mark(cw, line, &label_style, selected)?
++                            self.write_line_context_mark(
++                                cw,
++                                line,
++                                &label_style,
++                                selected,
++                                show_git_context,
++                                context_gutter_stats_width,
++                            )?
+                         }
+ 
+                         Col::Name => {

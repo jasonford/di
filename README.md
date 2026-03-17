@@ -23,10 +23,10 @@ chmod +x develop
 - Open files with plain `nvim` inside the container
 - Running `vim` in the container opens the same vanilla Neovim binary
 - `broot` launches in the upper-right pane as a patched source build, starts in watch mode, and has git file status info enabled by default
-- The bundled `broot` patches make watch mode refresh recursively from the current root and show inline git `+/-` counts on changed files and directories
+- The bundled `broot` patches make watch mode refresh recursively from the current root and show git status plus `+/-` counts in a fixed gutter on changed files and directories
 - The lower-right pane follows broot's current selection and shows unified git diffs for changed tracked text files, highlighted text previews for normal files, a real minimal Bash shell for directories, and safe fallbacks for binaries and large files
 - Press `Enter` or double-click a text file in broot to open it in a managed Neovim pane on the far right; the layout switches to `1/3 | 1/3 | 1/3`
-- The broot tree marks open Neovim buffers with `=` for clean buffers and `*` for buffers with unsaved edits
+- The broot tree uses that same fixed gutter to mark open Neovim buffers with `=` for clean buffers and `*` for buffers with unsaved edits
 - The Neovim pane is reused for later selections, only shows one visible buffer at a time, and disappears automatically when the last file buffer is closed
 - `broot` is launched directly with `--confine-root`, so browsing stays pinned to the mounted repo without `proot`
 

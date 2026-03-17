@@ -43,6 +43,15 @@ capture_pane() {
   last_capture="$("${tmux_cmd[@]}" capture-pane -p -t "$TMUX_SESSION_NAME:0.0" -S -200 2>/dev/null || true)"
 }
 
+assert_no_trailing_stats() {
+  local file_regex="$1"
+
+  capture_pane
+  if printf '%s\n' "$last_capture" | grep -Eq "${file_regex}[[:space:]]+\\+[0-9]+-[0-9]+$"; then
+    fail_with_capture "git stats still trailed ${file_regex}"
+  fi
+}
+
 file_name_column() {
   local file_name="$1"
 
@@ -121,6 +130,10 @@ launch_tmux() {
   mkdir -p "$repo_root" "$home_dir" "$xdg_config_home"
   printf 'alpha\n' >"$repo_root/alpha.txt"
   printf 'beta\n' >"$repo_root/beta.txt"
+  git -C "$repo_root" init -q
+  git -C "$repo_root" add alpha.txt beta.txt
+  git -C "$repo_root" -c user.name=Test -c user.email=test@example.com commit -qm init
+  printf 'alpha\ndirty\n' >"$repo_root/alpha.txt"
   : >"$selection_output"
   : >"$editor_state_file"
 
@@ -128,6 +141,7 @@ launch_tmux() {
     "TERM=tmux-256color HOME=$home_dir BR_INSTALL=no XDG_CONFIG_HOME=$xdg_config_home $BROOT_BIN --selection-output $selection_output --editor-state-file $editor_state_file -g --confine-root $repo_root --cmd :toggle_watch"
 }
 
+require_command git
 require_command grep
 require_command realpath
 require_command tmux
@@ -138,22 +152,34 @@ launch_tmux
 if ! wait_for_regex 'alpha\.txt'; then
   fail_with_capture 'broot never rendered the tracked file list'
 fi
+if ! wait_for_regex 'M[[:space:]]+\+[0-9]+-[0-9]+[[:space:]]+alpha\.txt$'; then
+  fail_with_capture 'git diff stats never moved into the alpha.txt gutter'
+fi
+assert_no_trailing_stats 'alpha\.txt'
+assert_no_trailing_stats 'beta\.txt'
 
 printf '0\t%s\n' "$repo_root/alpha.txt" >"$editor_state_file"
-if ! wait_for_regex '=[[:space:]]+alpha\.txt'; then
+if ! wait_for_regex 'M[[:space:]]+\+[0-9]+-[0-9]+[[:space:]]+=[[:space:]]+alpha\.txt$'; then
   fail_with_capture 'clean editor marker never appeared in broot'
 fi
 assert_aligned_file_columns 'alpha.txt' 'beta.txt'
+assert_no_trailing_stats 'alpha\.txt'
 
 printf '1\t%s\n' "$repo_root/alpha.txt" >"$editor_state_file"
-if ! wait_for_regex '\*[[:space:]]+alpha\.txt'; then
+if ! wait_for_regex 'M[[:space:]]+\+[0-9]+-[0-9]+[[:space:]]+\*[[:space:]]+alpha\.txt$'; then
   fail_with_capture 'modified editor marker never appeared in broot'
 fi
 assert_aligned_file_columns 'alpha.txt' 'beta.txt'
+assert_no_trailing_stats 'alpha\.txt'
 
 : >"$editor_state_file"
-if ! wait_for_absent_regex '[=*][[:space:]]+alpha\.txt'; then
+if ! wait_for_absent_regex '[=*][[:space:]]+alpha\.txt$'; then
   fail_with_capture 'editor marker did not clear when the state file was emptied'
 fi
+if ! wait_for_regex 'M[[:space:]]+\+[0-9]+-[0-9]+[[:space:]]+alpha\.txt$'; then
+  fail_with_capture 'alpha.txt gutter did not return to git-only state'
+fi
+assert_aligned_file_columns 'alpha.txt' 'beta.txt'
+assert_no_trailing_stats 'alpha\.txt'
 
 printf 'broot editor state smoke test passed\n'
