@@ -33,7 +33,7 @@ index e8613b7..762ca80 100644
  pub mod content_type;
  pub mod display;
 diff --git a/src/tree/tree_line.rs b/src/tree/tree_line.rs
-index 02de5d9..e69a46f 100644
+index 02de5d9..ea0e3a6 100644
 --- a/src/tree/tree_line.rs
 +++ b/src/tree/tree_line.rs
 @@ -6,7 +6,7 @@ use {
@@ -45,26 +45,44 @@ index 02de5d9..e69a46f 100644
          errors::TreeBuildError,
          file_sum::FileSum,
          git::LineGitStatus,
-@@ -52,7 +52,7 @@ pub struct TreeLine {
+@@ -52,7 +52,8 @@ pub struct TreeLine {
      pub sum: Option<FileSum>, // None when not measured
      pub metadata: fs::Metadata,
      pub git_status: Option<LineGitStatus>,
 -    pub editor_state: Option<EditorBufferState>,
++    pub unlisted_git_status: Option<LineGitStatus>,
 +    pub context_mark: Option<ContextGutterMark>,
  }
- 
+
  pub struct TreeLineBuilder {
-@@ -118,7 +118,7 @@ impl TreeLineBuilder {
+@@ -66,6 +67,7 @@ pub struct TreeLineBuilder {
+     pub has_error: bool,
+     pub score: i32,
+     pub direct_match: bool,
++    pub unlisted_git_status: Option<LineGitStatus>,
+ }
+
+ impl TreeLineBuilder {
+@@ -84,6 +86,7 @@ impl TreeLineBuilder {
+             has_error,
+             score,
+             direct_match,
++            unlisted_git_status,
+         } = self;
+         let metadata = fs::symlink_metadata(&path).map_err(|_| TreeBuildError::FileNotFound {
+             path: path.to_string_lossy().to_string(),
+@@ -118,7 +121,8 @@ impl TreeLineBuilder {
              sum: None,
              metadata,
              git_status: None,
 -            editor_state: None,
++            unlisted_git_status,
 +            context_mark: None,
          })
      }
  }
 diff --git a/src/tree_build/builder.rs b/src/tree_build/builder.rs
-index 391392b..fe7d677 100644
+index 391392b..2d471cf 100644
 --- a/src/tree_build/builder.rs
 +++ b/src/tree_build/builder.rs
 @@ -9,6 +9,7 @@ use {
@@ -75,7 +93,74 @@ index 391392b..fe7d677 100644
          editor_state::EditorStateSet,
          errors::TreeBuildError,
          git::{
-@@ -557,7 +558,9 @@ impl<'c> TreeBuilder<'c> {
+@@ -26,6 +27,7 @@ use {
+     },
+     git2::Repository,
+     id_arena::Arena,
++    rustc_hash::FxHashSet,
+     std::{
+         collections::{
+             BinaryHeap,
+@@ -476,6 +478,7 @@ impl<'c> TreeBuilder<'c> {
+     fn make_tree_line(
+         &self,
+         bid: BId,
++        visible_bids: &FxHashSet<usize>,
+     ) -> Result<TreeLine, TreeBuildError> {
+         let bline = &self.blines[bid];
+         let path = bline.path.clone();
+@@ -506,15 +509,37 @@ impl<'c> TreeBuilder<'c> {
+             has_error: bline.has_error,
+             score: bline.score,
+             direct_match: bline.direct_match,
++            unlisted_git_status: self.aggregate_unlisted_git_status(bid, visible_bids),
+         }
+         .build(self.con)
+     }
+
++    fn aggregate_unlisted_git_status(
++        &self,
++        bid: BId,
++        visible_bids: &FxHashSet<usize>,
++    ) -> Option<crate::git::LineGitStatus> {
++        let computer = self.line_status_computer.as_ref()?;
++        self.blines[bid]
++            .children
++            .as_ref()?
++            .iter()
++            .filter(|child_id| !visible_bids.contains(&child_id.index()))
++            .filter_map(|child_id| computer.line_status(&self.blines[*child_id].path))
++            .reduce(crate::git::LineGitStatus::merged)
++    }
++
+     /// make a tree from the builder's specific structure
+     fn take_as_tree(
+         mut self,
+         out_blines: &[BId],
+     ) -> Tree {
++        let visible_bids: FxHashSet<usize> = out_blines
++            .iter()
++            .copied()
++            .filter(|bid| self.blines[*bid].has_match)
++            .map(|bid| bid.index())
++            .collect();
+         let mut lines: Vec<TreeLine> = Vec::new();
+         for id in out_blines {
+             if self.blines[*id].has_match {
+@@ -522,7 +547,7 @@ impl<'c> TreeBuilder<'c> {
+                 if self.blines[*id].can_enter(self.con) && self.blines[*id].children.is_none() {
+                     self.load_children(*id);
+                 }
+-                if let Ok(tree_line) = self.make_tree_line(*id) {
++                if let Ok(tree_line) = self.make_tree_line(*id, &visible_bids) {
+                     lines.push(tree_line);
+                 } else {
+                     // I guess the file went missing during tree computation
+@@ -554,10 +579,13 @@ impl<'c> TreeBuilder<'c> {
+             for line in &mut tree.lines {
+                 line.git_status = computer.line_status(&line.path);
+             }
++            tree.apply_pruning_git_statuses();
          }
          if let Some(editor_state_set) = &self.editor_state_set {
              for line in &mut tree.lines {
@@ -116,7 +201,7 @@ index eb36e99..aadee06 100644
 @@ -315,25 +315,27 @@ impl<'a, 's, 't> DisplayableTree<'a, 's, 't> {
          Ok(0)
      }
- 
+
 -    /// write the symbol showing whether the path is staged
 -    fn write_line_stage_mark<W: Write>(
 +    /// write the fixed-width context gutter cell
@@ -134,7 +219,7 @@ index eb36e99..aadee06 100644
 +            cw.queue_char(label_style, ' ')?;
 +            return Ok(0);
          };
- 
+
 -        let style = match editor_state {
 -            EditorBufferState::Clean => &self.skin.git_status_current,
 -            EditorBufferState::Modified => &self.skin.git_status_modified,
@@ -153,10 +238,10 @@ index eb36e99..aadee06 100644
          cw.queue_char(mark_style, mark)?;
 @@ -656,7 +658,7 @@ impl<'a, 's, 't> DisplayableTree<'a, 's, 't> {
                          Col::Count => self.write_line_count(cw, line, count_len, selected)?,
- 
+
                          Col::Staged => {
 -                            self.write_line_stage_mark(cw, line, &label_style, selected)?
 +                            self.write_line_context_mark(cw, line, &label_style, selected)?
                          }
- 
+
                          Col::Name => {

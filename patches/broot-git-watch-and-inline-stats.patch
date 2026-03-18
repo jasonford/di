@@ -4,7 +4,7 @@ index 2756f98..443dee1 100644
 +++ b/src/browser/browser_state.rs
 @@ -227,9 +227,15 @@ impl PanelState for BrowserState {
      }
- 
+
      fn watchable_paths(&self) -> Vec<PathBuf> {
 -        let mut paths = Vec::new();
 -        for line in &self.tree.lines {
@@ -37,7 +37,7 @@ index 9df8672..bd30087 100644
 @@ -241,6 +241,27 @@ impl<'a, 's, 't> DisplayableTree<'a, 's, 't> {
          Ok(0)
      }
- 
+
 +    fn write_line_diff_stats<W: Write>(
 +        &self,
 +        cw: &mut CropWriter<W>,
@@ -69,9 +69,9 @@ index 9df8672..bd30087 100644
 +        self.write_line_diff_stats(cw, line, selected)?;
          Ok(1)
      }
- 
+
 diff --git a/src/git/status.rs b/src/git/status.rs
-index 0500e46..454deca 100644
+index 0500e46..e125cd3 100644
 --- a/src/git/status.rs
 +++ b/src/git/status.rs
 @@ -1,8 +1,12 @@
@@ -87,9 +87,9 @@ index 0500e46..454deca 100644
      },
      rustc_hash::FxHashMap,
      std::path::{
-@@ -12,16 +16,45 @@ use {
+@@ -12,16 +16,53 @@ use {
  };
- 
+
  const INTERESTING: Status = Status::from_bits_truncate(
 -    Status::WT_NEW.bits()
 +    Status::INDEX_NEW.bits()
@@ -105,7 +105,7 @@ index 0500e46..454deca 100644
 +        | Status::WT_TYPECHANGE.bits()
          | Status::IGNORED.bits(),
  );
- 
+
 +#[derive(Debug, Clone, Copy, Default)]
 +pub struct LineDiffStats {
 +    pub insertions: usize,
@@ -115,6 +115,14 @@ index 0500e46..454deca 100644
 +impl LineDiffStats {
 +    pub fn has_changes(self) -> bool {
 +        self.insertions > 0 || self.deletions > 0
++    }
++
++    pub fn merged(
++        mut self,
++        other: LineDiffStats,
++    ) -> Self {
++        self.add(other);
++        self
 +    }
 +
 +    fn add(
@@ -133,9 +141,9 @@ index 0500e46..454deca 100644
 +    pub status: Option<Status>,
 +    pub diff_stats: Option<LineDiffStats>,
  }
- 
+
  impl LineGitStatus {
-@@ -31,10 +64,42 @@ impl LineGitStatus {
+@@ -31,10 +72,61 @@ impl LineGitStatus {
      ) -> Option<LineGitStatus> {
          repo.status_file(relative_path)
              .ok()
@@ -177,10 +185,29 @@ index 0500e46..454deca 100644
 +        } else {
 +            Some(status)
 +        }
++    }
++
++    pub fn merged(
++        self,
++        other: LineGitStatus,
++    ) -> Self {
++        let status = match (self.status, other.status) {
++            (Some(left), Some(right)) => {
++                Some(Status::from_bits_truncate(left.bits() | right.bits()))
++            }
++            (Some(status), None) | (None, Some(status)) => Some(status),
++            (None, None) => None,
++        };
++        let diff_stats = match (self.diff_stats, other.diff_stats) {
++            (Some(left), Some(right)) => Some(left.merged(right)),
++            (Some(diff_stats), None) | (None, Some(diff_stats)) => Some(diff_stats),
++            (None, None) => None,
++        };
++        Self { status, diff_stats }
      }
  }
- 
-@@ -42,39 +107,86 @@ impl LineGitStatus {
+
+@@ -42,39 +134,86 @@ impl LineGitStatus {
  /// looks at all the statuses of the repo and build a map path->status
  /// which can then be efficiently queried
  pub struct LineStatusComputer {
@@ -275,8 +302,8 @@ index 0500e46..454deca 100644
 +            .is_some_and(|line_status| line_status.is_interesting())
      }
  }
- 
-@@ -91,23 +203,60 @@ impl TreeGitStatus {
+
+@@ -91,23 +230,60 @@ impl TreeGitStatus {
              .head()
              .ok()
              .and_then(|head| head.shorthand().map(String::from));
@@ -351,7 +378,7 @@ index 0500e46..454deca 100644
 +    delta.new_file().path().or_else(|| delta.old_file().path())
 +}
 diff --git a/src/tree/tree.rs b/src/tree/tree.rs
-index 4b57501..dba1a70 100644
+index 4b57501..88c939c 100644
 --- a/src/tree/tree.rs
 +++ b/src/tree/tree.rs
 @@ -17,7 +17,6 @@ use {
@@ -386,7 +413,47 @@ index 4b57501..dba1a70 100644
          if !self.try_select_path(&selected_path) && self.selection >= self.lines.len() {
              self.selection = 0;
          }
-@@ -679,3 +677,139 @@ impl Tree {
+@@ -187,6 +185,31 @@ impl Tree {
+         }
+     }
+
++    pub fn apply_pruning_git_statuses(&mut self) {
++        let mut unlisted_git_status_by_id: FxHashMap<TreeLineId, crate::git::LineGitStatus> =
++            FxHashMap::default();
++        for line in &self.lines {
++            if let Some(unlisted_git_status) = line.unlisted_git_status {
++                unlisted_git_status_by_id.insert(line.id, unlisted_git_status);
++            }
++        }
++        for line in &mut self.lines {
++            if !matches!(line.line_type, TreeLineType::Pruning) {
++                continue;
++            }
++            let Some(parent_id) = line.parent_id else {
++                continue;
++            };
++            let Some(unlisted_git_status) = unlisted_git_status_by_id.get(&parent_id).copied() else {
++                continue;
++            };
++            line.git_status = Some(
++                line.git_status
++                    .map_or(unlisted_git_status, |git_status| git_status.merged(unlisted_git_status)),
++            );
++        }
++    }
++
+     pub fn is_empty(&self) -> bool {
+         self.lines.len() == 1
+     }
+@@ -656,6 +679,7 @@ impl Tree {
+                 has_error: false,
+                 score: 1,
+                 direct_match: true,
++                unlisted_git_status: None,
+             }
+             .build(con)?;
+
+@@ -679,3 +703,188 @@ impl Tree {
          Ok(())
      }
  }
@@ -407,10 +474,14 @@ index 4b57501..dba1a70 100644
 +            IndexAddOption,
 +            Repository,
 +            Signature,
++            Status,
 +        },
 +        std::{
 +            fs,
-+            path::Path,
++            path::{
++                Path,
++                PathBuf,
++            },
 +        },
 +        tempfile::TempDir,
 +    };
@@ -451,6 +522,43 @@ index 4b57501..dba1a70 100644
 +        assert_eq!(dir_stats.deletions, 0);
 +    }
 +
++    #[test]
++    fn pruning_line_aggregates_git_status_for_unlisted_entries() {
++        let tmp_dir = tempfile::tempdir().unwrap();
++        let repo_root = tmp_dir.path().to_path_buf();
++        let repo = Repository::init(&repo_root).unwrap();
++        let sub_dir = repo_root.join("sub");
++        let file_paths: Vec<PathBuf> = ["a.txt", "b.txt", "c.txt", "d.txt"]
++            .into_iter()
++            .map(|name| sub_dir.join(name))
++            .collect();
++
++        fs::create_dir_all(&sub_dir).unwrap();
++        for file_path in &file_paths {
++            fs::write(file_path, "a\n").unwrap();
++        }
++        commit_all(&repo, "init");
++
++        for file_path in &file_paths {
++            fs::write(file_path, "a\nb\n").unwrap();
++        }
++
++        let con = git_context();
++        let tree = build_git_tree_with_targeted_size(&repo_root, &con, 3);
++        let pruning_line = tree
++            .lines
++            .iter()
++            .find(|line| matches!(line.line_type, TreeLineType::Pruning))
++            .unwrap();
++        let pruning_status = pruning_line.git_status.unwrap();
++        let diff_stats = pruning_status.diff_stats.unwrap();
++
++        assert_eq!(pruning_line.unlisted, 4);
++        assert_eq!(pruning_status.display_status(), Some(Status::WT_MODIFIED));
++        assert_eq!(diff_stats.insertions, 4);
++        assert_eq!(diff_stats.deletions, 0);
++    }
++
 +    fn git_context() -> AppContext {
 +        let mut con = AppContext::default();
 +        con.initial_tree_options.show_git_file_info = true;
@@ -461,10 +569,18 @@ index 4b57501..dba1a70 100644
 +        repo_root: &Path,
 +        con: &AppContext,
 +    ) -> Tree {
++        build_git_tree_with_targeted_size(repo_root, con, 50)
++    }
++
++    fn build_git_tree_with_targeted_size(
++        repo_root: &Path,
++        con: &AppContext,
++        targeted_size: usize,
++    ) -> Tree {
 +        TreeBuilder::from(
 +            repo_root.to_path_buf(),
 +            con.initial_tree_options.clone(),
-+            50,
++            targeted_size,
 +            con,
 +        )
 +        .unwrap()
@@ -531,7 +647,7 @@ index 80ee41c..1f948f5 100644
 --- a/src/watcher.rs
 +++ b/src/watcher.rs
 @@ -26,14 +26,10 @@ const DEBOUNCE_MAX_DELAY: std::time::Duration = std::time::Duration::from_millis
- 
+
  /// Watch for notify events on a path, and send a :refresh sequence when a change is detected
  ///
 -/// inotify events are debounced:

@@ -11,7 +11,7 @@ index b472af7..8469a9a 100644
 +    Col::Branch,
      Col::Name,
  ];
- 
+
 @@ -131,7 +131,7 @@ impl Col {
          let tree_options = &tree.options;
          match self {
@@ -36,13 +36,13 @@ index b472af7..8469a9a 100644
          }
      }
 diff --git a/src/display/displayable_tree.rs b/src/display/displayable_tree.rs
-index aadee06..1ad7ed0 100644
+index aadee06..46073d3 100644
 --- a/src/display/displayable_tree.rs
 +++ b/src/display/displayable_tree.rs
 @@ -218,13 +218,11 @@ impl<'a, 's, 't> DisplayableTree<'a, 's, 't> {
          })
      }
- 
+
 -    fn write_line_git_status<W: Write>(
 +    fn line_git_status_display(
          &self,
@@ -52,7 +52,7 @@ index aadee06..1ad7ed0 100644
 -    ) -> Result<usize, termimad::Error> {
 -        let (style, char) = if !line.is_selectable() {
 +    ) -> (&CompoundStyle, char) {
-+        if !line.is_selectable() {
++        if !line.is_selectable() && !matches!(line.line_type, TreeLineType::Pruning) {
              (&self.skin.tree, ' ')
          } else {
              match line.git_status.and_then(|status| status.display_status()) {
@@ -66,7 +66,7 @@ index aadee06..1ad7ed0 100644
 -        Ok(0)
 +        }
      }
- 
+
 -    fn write_line_diff_stats<W: Write>(
 +    fn write_line_git_status<W: Write>(
          &self,
@@ -111,12 +111,12 @@ index aadee06..1ad7ed0 100644
 +        cw.repeat(label_style, &SPACE_FILLING, blank_width)?;
 +        Ok(0)
      }
- 
+
      fn write_date<W: Write>(
 @@ -315,31 +322,77 @@ impl<'a, 's, 't> DisplayableTree<'a, 's, 't> {
          Ok(0)
      }
- 
+
 -    /// write the fixed-width context gutter cell
 +    /// write the context gutter cell
      fn write_line_context_mark<W: Write>(
@@ -154,7 +154,7 @@ index aadee06..1ad7ed0 100644
              return Ok(0);
 -        };
 +        }
- 
+
 -        let style = match context_mark {
 -            ContextGutterMark::EditorClean => &self.skin.git_status_current,
 -            ContextGutterMark::EditorModified => &self.skin.git_status_modified,
@@ -205,7 +205,7 @@ index aadee06..1ad7ed0 100644
 +        }
          Ok(0)
      }
- 
+
 @@ -417,7 +470,6 @@ impl<'a, 's, 't> DisplayableTree<'a, 's, 't> {
              }
              _ => {}
@@ -213,7 +213,7 @@ index aadee06..1ad7ed0 100644
 -        self.write_line_diff_stats(cw, line, selected)?;
          Ok(1)
      }
- 
+
 @@ -536,6 +588,22 @@ impl<'a, 's, 't> DisplayableTree<'a, 's, 't> {
              f.queue(cursor::MoveTo(self.area.left, self.area.top))?;
          }
@@ -239,7 +239,7 @@ index aadee06..1ad7ed0 100644
          self.skin.queue_reset(f)?;
 @@ -658,7 +726,23 @@ impl<'a, 's, 't> DisplayableTree<'a, 's, 't> {
                          Col::Count => self.write_line_count(cw, line, count_len, selected)?,
- 
+
                          Col::Staged => {
 -                            self.write_line_context_mark(cw, line, &label_style, selected)?
 +                            if line.is_dir() {
@@ -260,5 +260,98 @@ index aadee06..1ad7ed0 100644
 +                                )?
 +                            }
                          }
- 
+
                          Col::Name => {
+@@ -707,3 +791,92 @@ impl<'a, 's, 't> DisplayableTree<'a, 's, 't> {
+         Ok(())
+     }
+ }
++
++#[cfg(test)]
++mod tests {
++    use {
++        super::*,
++        crate::{
++            git::LineGitStatus,
++            task_sync::ComputationResult,
++            tree::TreeOptions,
++            tree_build::BuildReport,
++        },
++        std::fs,
++    };
++
++    #[test]
++    fn pruning_lines_keep_git_marker_display() {
++        let tmp_dir = tempfile::tempdir().unwrap();
++        let root_path = tmp_dir.path().to_path_buf();
++        let child_path = root_path.join("tracked.txt");
++        fs::write(&child_path, "a\n").unwrap();
++
++        let tree = Tree {
++            lines: vec![
++                test_line(&root_path, 0, None, TreeLineType::Dir, None),
++                test_line(
++                    &child_path,
++                    1,
++                    Some(0),
++                    TreeLineType::Pruning,
++                    Some(LineGitStatus {
++                        status: Some(Status::WT_MODIFIED),
++                        diff_stats: None,
++                    }),
++                ),
++            ],
++            next_line_id: 2,
++            selection: 0,
++            options: TreeOptions::default(),
++            scroll: 0,
++            total_search: false,
++            git_status: ComputationResult::None,
++            build_report: BuildReport::default(),
++        };
++        let skin = StyleMap::no_term();
++        let ext_colors = ExtColorMap::default();
++        let displayable_tree = DisplayableTree::out_of_app(&tree, &skin, &ext_colors, 80, 3);
++
++        let (_, git_char) = displayable_tree.line_git_status_display(&tree.lines[1]);
++
++        assert_eq!(git_char, 'M');
++    }
++
++    fn test_line(
++        path: &std::path::Path,
++        id: usize,
++        parent_id: Option<usize>,
++        line_type: TreeLineType,
++        git_status: Option<LineGitStatus>,
++    ) -> TreeLine {
++        let metadata = fs::symlink_metadata(path).unwrap();
++        TreeLine {
++            id,
++            parent_id,
++            left_branches: vec![false; parent_id.map_or(0, |_| 1)].into_boxed_slice(),
++            depth: parent_id.map_or(0, |_| 1),
++            path: path.to_path_buf(),
++            subpath: path
++                .file_name()
++                .map(|name| name.to_string_lossy().into_owned())
++                .unwrap_or_else(|| path.to_string_lossy().into_owned()),
++            icon: None,
++            name: path
++                .file_name()
++                .map(|name| name.to_string_lossy().into_owned())
++                .unwrap_or_else(|| path.to_string_lossy().into_owned()),
++            line_type,
++            has_error: false,
++            nb_kept_children: 0,
++            unlisted: 0,
++            score: 0,
++            direct_match: false,
++            sum: None,
++            metadata,
++            git_status,
++            unlisted_git_status: None,
++            context_mark: None,
++        }
++    }
++}
