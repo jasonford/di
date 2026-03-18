@@ -101,6 +101,23 @@ wait_for_absent_regex() {
   ! printf '%s\n' "$last_capture" | grep -Eq "$expected_regex"
 }
 
+wait_for_literal() {
+  local expected_literal="$1"
+  local deadline=$((SECONDS + 10))
+  while (( SECONDS < deadline )); do
+    capture_pane
+    if printf '%s\n' "$last_capture" | grep -Fq "$expected_literal"; then
+      return 0
+    fi
+    if [ "$(pane_dead)" = "1" ]; then
+      return 1
+    fi
+    sleep 0.1
+  done
+  capture_pane
+  printf '%s\n' "$last_capture" | grep -Fq "$expected_literal"
+}
+
 fail_with_capture() {
   local message="$1"
   capture_pane
@@ -109,29 +126,31 @@ fail_with_capture() {
   exit 1
 }
 
-assert_aligned_file_columns() {
-  local marked_file="$1"
-  local unmarked_file="$2"
-  local marked_column=""
-  local unmarked_column=""
+assert_aligned_name_columns() {
+  local left_name="$1"
+  local right_name="$2"
+  local left_column=""
+  local right_column=""
 
   capture_pane
-  marked_column="$(file_name_column "$marked_file")"
-  unmarked_column="$(file_name_column "$unmarked_file")"
-  if [ -z "$marked_column" ] || [ -z "$unmarked_column" ] || [ "$marked_column" != "$unmarked_column" ]; then
-    printf 'expected aligned file columns for %s and %s\n' "$marked_file" "$unmarked_file" >&2
-    printf 'marked column: %s\n' "${marked_column:-<missing>}" >&2
-    printf 'unmarked column: %s\n' "${unmarked_column:-<missing>}" >&2
+  left_column="$(file_name_column "$left_name")"
+  right_column="$(file_name_column "$right_name")"
+  if [ -z "$left_column" ] || [ -z "$right_column" ] || [ "$left_column" != "$right_column" ]; then
+    printf 'expected aligned name columns for %s and %s\n' "$left_name" "$right_name" >&2
+    printf 'left column: %s\n' "${left_column:-<missing>}" >&2
+    printf 'right column: %s\n' "${right_column:-<missing>}" >&2
     fail_with_capture 'context gutter width shifted the filename column'
   fi
 }
 
 launch_tmux() {
   mkdir -p "$repo_root" "$home_dir" "$xdg_config_home"
+  mkdir -p "$repo_root/folder"
   printf 'alpha\n' >"$repo_root/alpha.txt"
   printf 'beta\n' >"$repo_root/beta.txt"
+  printf 'nested\n' >"$repo_root/folder/nested.txt"
   git -C "$repo_root" init -q
-  git -C "$repo_root" add alpha.txt beta.txt
+  git -C "$repo_root" add alpha.txt beta.txt folder/nested.txt
   git -C "$repo_root" -c user.name=Test -c user.email=test@example.com commit -qm init
   printf 'alpha\ndirty\n' >"$repo_root/alpha.txt"
   : >"$selection_output"
@@ -152,34 +171,42 @@ launch_tmux
 if ! wait_for_regex 'alpha\.txt'; then
   fail_with_capture 'broot never rendered the tracked file list'
 fi
-if ! wait_for_regex 'M\+[0-9]+-[0-9]+[[:space:]]+.*alpha\.txt$'; then
+if ! wait_for_regex 'folder$'; then
+  fail_with_capture 'broot never rendered the tracked directory row'
+fi
+if ! wait_for_literal 'M+1-0 ├──alpha.txt'; then
   fail_with_capture 'git diff stats never moved into the alpha.txt gutter'
 fi
+assert_aligned_name_columns 'folder' 'alpha.txt'
+assert_aligned_name_columns 'alpha.txt' 'beta.txt'
 assert_no_trailing_stats 'alpha\.txt'
 assert_no_trailing_stats 'beta\.txt'
 
 printf '0\t%s\n' "$repo_root/alpha.txt" >"$editor_state_file"
-if ! wait_for_regex 'M\+[0-9]+-[0-9]+[[:space:]]+=[[:space:]]+.*alpha\.txt$'; then
+if ! wait_for_literal 'M+1-0=├──alpha.txt'; then
   fail_with_capture 'clean editor marker never appeared in broot'
 fi
-assert_aligned_file_columns 'alpha.txt' 'beta.txt'
+assert_aligned_name_columns 'folder' 'alpha.txt'
+assert_aligned_name_columns 'alpha.txt' 'beta.txt'
 assert_no_trailing_stats 'alpha\.txt'
 
 printf '1\t%s\n' "$repo_root/alpha.txt" >"$editor_state_file"
-if ! wait_for_regex 'M\+[0-9]+-[0-9]+[[:space:]]+\*[[:space:]]+.*alpha\.txt$'; then
+if ! wait_for_literal 'M+1-0*├──alpha.txt'; then
   fail_with_capture 'modified editor marker never appeared in broot'
 fi
-assert_aligned_file_columns 'alpha.txt' 'beta.txt'
+assert_aligned_name_columns 'folder' 'alpha.txt'
+assert_aligned_name_columns 'alpha.txt' 'beta.txt'
 assert_no_trailing_stats 'alpha\.txt'
 
 : >"$editor_state_file"
-if ! wait_for_absent_regex '[=*][[:space:]]+.*alpha\.txt$'; then
+if ! wait_for_absent_regex '[=*].*alpha\.txt$'; then
   fail_with_capture 'editor marker did not clear when the state file was emptied'
 fi
-if ! wait_for_regex 'M\+[0-9]+-[0-9]+[[:space:]]+.*alpha\.txt$'; then
+if ! wait_for_literal 'M+1-0 ├──alpha.txt'; then
   fail_with_capture 'alpha.txt gutter did not return to git-only state'
 fi
-assert_aligned_file_columns 'alpha.txt' 'beta.txt'
+assert_aligned_name_columns 'folder' 'alpha.txt'
+assert_aligned_name_columns 'alpha.txt' 'beta.txt'
 assert_no_trailing_stats 'alpha\.txt'
 
 printf 'broot editor state smoke test passed\n'

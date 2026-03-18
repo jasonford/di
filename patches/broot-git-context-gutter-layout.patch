@@ -1,8 +1,8 @@
 diff --git a/src/display/col.rs b/src/display/col.rs
-index b472af7..6db474c 100644
+index b472af7..8469a9a 100644
 --- a/src/display/col.rs
 +++ b/src/display/col.rs
-@@ -57,8 +57,8 @@ pub static DEFAULT_COLS: Cols = [
+@@ -68,8 +68,8 @@ pub static DEFAULT_COLS: Cols = [
      Col::Date,
      Col::Permission,
      Col::Count,
@@ -21,7 +21,7 @@ index b472af7..6db474c 100644
              Col::DeviceId => tree_options.show_device_id,
              Col::Size => tree_options.show_sizes,
              Col::Date => tree_options.show_dates,
-@@ -139,7 +139,10 @@ impl Col {
+@@ -139,7 +139,12 @@ impl Col {
              Col::Count => tree_options.show_counts,
              Col::Branch => true,
              //Col::Staged => app_state.map_or(false, |a| !a.stage.is_empty()),
@@ -29,23 +29,17 @@ index b472af7..6db474c 100644
 +            Col::Staged => tree
 +                .lines
 +                .iter()
-+                .any(|line| line.context_mark.is_some() || line.git_status.is_some()),
++                .any(|line| {
++                    line.context_mark.is_some() || (!line.is_dir() && line.git_status.is_some())
++                }),
              Col::Name => true,
          }
      }
 diff --git a/src/display/displayable_tree.rs b/src/display/displayable_tree.rs
-index aadee06..19a9146 100644
+index aadee06..1ad7ed0 100644
 --- a/src/display/displayable_tree.rs
 +++ b/src/display/displayable_tree.rs
-@@ -3,7 +3,6 @@ use {
-         BRANCH_FILLING,
-         Col,
-         CropWriter,
--        GitStatusDisplay,
-         MatchedString,
-         SPACE_FILLING,
-         num_format::format_count,
-@@ -218,13 +217,11 @@ impl<'a, 's, 't> DisplayableTree<'a, 's, 't> {
+@@ -218,13 +218,11 @@ impl<'a, 's, 't> DisplayableTree<'a, 's, 't> {
          })
      }
  
@@ -62,7 +56,7 @@ index aadee06..19a9146 100644
              (&self.skin.tree, ' ')
          } else {
              match line.git_status.and_then(|status| status.display_status()) {
-@@ -236,31 +233,28 @@ impl<'a, 's, 't> DisplayableTree<'a, 's, 't> {
+@@ -236,31 +234,40 @@ impl<'a, 's, 't> DisplayableTree<'a, 's, 't> {
                  None => (&self.skin.tree, ' '),
                  _ => (&self.skin.git_status_other, '?'),
              }
@@ -104,10 +98,30 @@ index aadee06..19a9146 100644
 -        Ok(())
 +            .map(|diff_stats| format!("+{}-{}", diff_stats.insertions, diff_stats.deletions).len())
 +            .unwrap_or(0)
++    }
++
++    fn write_blank_context_gutter<W: Write>(
++        &self,
++        cw: &mut CropWriter<W>,
++        label_style: &CompoundStyle,
++        show_git: bool,
++        stats_width: usize,
++    ) -> Result<usize, termimad::Error> {
++        let blank_width = if show_git { 2 + stats_width } else { 2 };
++        cw.repeat(label_style, &SPACE_FILLING, blank_width)?;
++        Ok(0)
      }
  
      fn write_date<W: Write>(
-@@ -322,27 +316,103 @@ impl<'a, 's, 't> DisplayableTree<'a, 's, 't> {
+@@ -315,31 +322,77 @@ impl<'a, 's, 't> DisplayableTree<'a, 's, 't> {
+         Ok(0)
+     }
+ 
+-    /// write the fixed-width context gutter cell
++    /// write the context gutter cell
+     fn write_line_context_mark<W: Write>(
+         &self,
+         cw: &mut CropWriter<W>,
          line: &TreeLine,
          label_style: &CompoundStyle,
          selected: bool,
@@ -118,9 +132,12 @@ index aadee06..19a9146 100644
 -            cw.queue_char(label_style, ' ')?;
 +        if !show_git {
 +            let Some(context_mark) = line.context_mark else {
-+                cw.queue_char(label_style, ' ')?;
-+                cw.queue_char(label_style, ' ')?;
-+                return Ok(0);
++                return self.write_blank_context_gutter(
++                    cw,
++                    label_style,
++                    show_git,
++                    stats_width,
++                );
 +            };
 +
 +            let style = match context_mark {
@@ -133,10 +150,22 @@ index aadee06..19a9146 100644
 +            };
 +            cond_bg!(mark_style, self, selected, style);
 +            cw.queue_char(mark_style, mark)?;
-+            cw.queue_char(label_style, ' ')?;
-+            return Ok(0);
+             cw.queue_char(label_style, ' ')?;
+             return Ok(0);
+-        };
 +        }
-+
+ 
+-        let style = match context_mark {
+-            ContextGutterMark::EditorClean => &self.skin.git_status_current,
+-            ContextGutterMark::EditorModified => &self.skin.git_status_modified,
+-        };
+-        let mark = match context_mark {
+-            ContextGutterMark::EditorClean => '=',
+-            ContextGutterMark::EditorModified => '*',
+-        };
+-        cond_bg!(mark_style, self, selected, style);
+-        cw.queue_char(mark_style, mark)?;
+-        cw.queue_char(label_style, ' ')?;
 +        let (git_style_ref, git_char) = self.line_git_status_display(line);
 +        cond_bg!(git_style, self, selected, git_style_ref);
 +        cw.queue_char(git_style, git_char)?;
@@ -160,8 +189,6 @@ index aadee06..19a9146 100644
 +            cw.repeat(label_style, &SPACE_FILLING, stats_width)?;
 +        }
 +
-+        cw.queue_char(label_style, ' ')?;
-+
 +        if let Some(context_mark) = line.context_mark {
 +            let style = match context_mark {
 +                ContextGutterMark::EditorClean => &self.skin.git_status_current,
@@ -174,58 +201,12 @@ index aadee06..19a9146 100644
 +            cond_bg!(mark_style, self, selected, style);
 +            cw.queue_char(mark_style, mark)?;
 +        } else {
-             cw.queue_char(label_style, ' ')?;
--            return Ok(0);
--        };
++            cw.queue_char(label_style, ' ')?;
 +        }
- 
--        let style = match context_mark {
--            ContextGutterMark::EditorClean => &self.skin.git_status_current,
--            ContextGutterMark::EditorModified => &self.skin.git_status_modified,
--        };
--        let mark = match context_mark {
--            ContextGutterMark::EditorClean => '=',
--            ContextGutterMark::EditorModified => '*',
--        };
--        cond_bg!(mark_style, self, selected, style);
--        cw.queue_char(mark_style, mark)?;
-         cw.queue_char(label_style, ' ')?;
          Ok(0)
      }
  
-+    fn write_root_branch<W: Write>(
-+        &self,
-+        cw: &mut CropWriter<W>,
-+        selected: bool,
-+    ) -> Result<(), ProgramError> {
-+        let ComputationResult::Done(git_status) = &self.tree.git_status else {
-+            return Ok(());
-+        };
-+        let Some(branch) = &git_status.current_branch_name else {
-+            return Ok(());
-+        };
-+        let branch_width = branch.chars().count();
-+        if branch_width >= cw.allowed {
-+            return Ok(());
-+        }
-+        let wide_prefix = branch_width + 3 < cw.allowed;
-+        cond_bg!(branch_style, self, selected, self.skin.git_branch);
-+        if wide_prefix {
-+            cw.queue_str(branch_style, " ᚜ ")?;
-+        } else {
-+            cw.queue_char(branch_style, ' ')?;
-+        }
-+        cw.queue_str(branch_style, branch)?;
-+        if !cw.is_full() {
-+            cw.queue_char(branch_style, ' ')?;
-+        }
-+        Ok(())
-+    }
-+
-     /// write the name or subpath, depending on the `pattern_object`
-     fn write_line_label<W: Write>(
-         &self,
-@@ -417,7 +488,6 @@ impl<'a, 's, 't> DisplayableTree<'a, 's, 't> {
+@@ -417,7 +470,6 @@ impl<'a, 's, 't> DisplayableTree<'a, 's, 't> {
              }
              _ => {}
          }
@@ -233,77 +214,51 @@ index aadee06..19a9146 100644
          Ok(1)
      }
  
-@@ -447,6 +517,9 @@ impl<'a, 's, 't> DisplayableTree<'a, 's, 't> {
-         &self,
-         cw: &mut CropWriter<W>,
-         selected: bool,
-+        show_context_gutter: bool,
-+        show_git: bool,
-+        stats_width: usize,
-     ) -> Result<(), ProgramError> {
-         cond_bg!(style, self, selected, self.skin.directory);
-         let line = &self.tree.lines[0];
-@@ -455,6 +528,9 @@ impl<'a, 's, 't> DisplayableTree<'a, 's, 't> {
-                 cw.queue_g_string(style, format!("{:>4} ", file_size::fit_4(s.to_size())))?;
-             }
-         }
-+        if show_context_gutter {
-+            self.write_line_context_mark(cw, line, &style, selected, show_git, stats_width)?;
-+        }
-         let title = line.path.to_string_lossy();
-         let title_len = UnicodeWidthStr::width(title.as_ref());
-         if title_len > cw.allowed {
-@@ -478,10 +554,7 @@ impl<'a, 's, 't> DisplayableTree<'a, 's, 't> {
-         }
- 
-         if self.in_app && !cw.is_full() {
--            if let ComputationResult::Done(git_status) = &self.tree.git_status {
--                let git_status_display = GitStatusDisplay::from(git_status, self.skin, cw.allowed);
--                git_status_display.write(cw, selected)?;
--            }
-+            self.write_root_branch(cw, selected)?;
-             #[cfg(any(target_os = "macos", target_os = "linux", target_os = "windows"))]
-             if self.tree.options.show_root_fs {
-                 if let Some(mount) = line.mount() {
-@@ -536,8 +609,24 @@ impl<'a, 's, 't> DisplayableTree<'a, 's, 't> {
+@@ -536,6 +588,22 @@ impl<'a, 's, 't> DisplayableTree<'a, 's, 't> {
              f.queue(cursor::MoveTo(self.area.left, self.area.top))?;
          }
          let mut cw = CropWriter::new(f, self.area.width as usize);
-+        let show_context_gutter = tree
++        let show_git_context = tree
 +            .lines
 +            .iter()
-+            .any(|line| line.context_mark.is_some() || line.git_status.is_some());
-+        let show_git_context = tree.lines.iter().any(|line| line.git_status.is_some());
++            .skip(1)
++            .any(|line| !line.is_dir() && line.git_status.is_some());
 +        let context_gutter_stats_width = if show_git_context {
-+            tree.lines.iter().map(Self::line_diff_stats_width).max().unwrap_or(0)
++            tree.lines
++                .iter()
++                .skip(1)
++                .filter(|line| !line.is_dir())
++                .map(Self::line_diff_stats_width)
++                .max()
++                .unwrap_or(0)
 +        } else {
 +            0
 +        };
          let pattern_object = tree.options.pattern.pattern.object();
--        self.write_root_line(&mut cw, self.in_app && tree.selection == 0)?;
-+        self.write_root_line(
-+            &mut cw,
-+            self.in_app && tree.selection == 0,
-+            show_context_gutter,
-+            show_git_context,
-+            context_gutter_stats_width,
-+        )?;
+         self.write_root_line(&mut cw, self.in_app && tree.selection == 0)?;
          self.skin.queue_reset(f)?;
- 
-         let visible_cols: Vec<Col> = tree
-@@ -658,7 +747,14 @@ impl<'a, 's, 't> DisplayableTree<'a, 's, 't> {
+@@ -658,7 +726,23 @@ impl<'a, 's, 't> DisplayableTree<'a, 's, 't> {
                          Col::Count => self.write_line_count(cw, line, count_len, selected)?,
  
                          Col::Staged => {
 -                            self.write_line_context_mark(cw, line, &label_style, selected)?
-+                            self.write_line_context_mark(
-+                                cw,
-+                                line,
-+                                &label_style,
-+                                selected,
-+                                show_git_context,
-+                                context_gutter_stats_width,
-+                            )?
++                            if line.is_dir() {
++                                self.write_blank_context_gutter(
++                                    cw,
++                                    &label_style,
++                                    show_git_context,
++                                    context_gutter_stats_width,
++                                )?
++                            } else {
++                                self.write_line_context_mark(
++                                    cw,
++                                    line,
++                                    &label_style,
++                                    selected,
++                                    show_git_context,
++                                    context_gutter_stats_width,
++                                )?
++                            }
                          }
  
                          Col::Name => {

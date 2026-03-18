@@ -259,17 +259,14 @@ probe_name_regex="$(escape_regex "$probe_name")"
 probe_line="$(line_for_regex "${probe_name_regex}$")"
 
 read -r header_insertions header_deletions <<<"$(extract_stats "$header_line")"
-read -r dir_insertions dir_deletions <<<"$(extract_stats "$bin_line")"
 read -r file_insertions file_deletions <<<"$(extract_stats "$probe_line")"
 
 mutate_probe
 
 expected_header_regex="^[[:space:]]+\\+$((header_insertions + 1))-${header_deletions}[[:space:]]+${workspace_regex}( .*)?$"
-expected_dir_regex="^.*\\+$((dir_insertions + 1))-${dir_deletions}[[:space:]]+bin$"
-expected_file_regex="^.*M\\+$((file_insertions + 1))-${file_deletions}[[:space:]]+.*[├└].*${probe_name_regex}$"
+expected_file_regex="^.*M\\+$((file_insertions + 1))-${file_deletions}[[:space:]]*[├└].*${probe_name_regex}$"
 
 assert_live_regex "$expected_header_regex" 'broot did not live update the upstream repo git summary for the mounted workspace root'
-assert_live_regex "$expected_dir_regex" 'broot did not live update the patched directory diff stats for the mounted workspace root'
 assert_live_regex "$expected_file_regex" 'broot did not live update the patched file status marker and diff stats for the mounted workspace root'
 
 printf 'broot live update smoke test passed\n'
