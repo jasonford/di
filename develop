@@ -29,7 +29,7 @@ if [ "$ALLOW_NET" = "1" ]; then
 fi
 
 echo "Building image $IMAGE (Docker cache will be reused if unchanged)..."
-docker build \
+DOCKER_BUILDKIT=1 docker build \
   --build-arg "CODEX_VERSION=$CODEX_VERSION" \
   --build-arg "BROOT_VERSION=$BROOT_VERSION" \
   -t "$IMAGE" \

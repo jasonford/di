@@ -1,3 +1,5 @@
+# syntax=docker/dockerfile:1.7
+
 FROM rust:1.83-bookworm AS broot-builder
 
 ARG BROOT_VERSION=v1.55.0
@@ -12,19 +14,21 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 WORKDIR /src
 RUN git clone --depth 1 --branch "${BROOT_VERSION}" https://github.com/Canop/broot broot
 WORKDIR /src/broot
-COPY patches/broot-selection-output.patch /tmp/broot-selection-output.patch
-COPY patches/broot-git-watch-and-inline-stats.patch /tmp/broot-git-watch-and-inline-stats.patch
-COPY patches/broot-confine-root.patch /tmp/broot-confine-root.patch
-COPY patches/broot-editor-pane-integration.patch /tmp/broot-editor-pane-integration.patch
-COPY patches/broot-context-gutter.patch /tmp/broot-context-gutter.patch
-COPY patches/broot-git-context-gutter-layout.patch /tmp/broot-git-context-gutter-layout.patch
-RUN git apply /tmp/broot-selection-output.patch \
-  && git apply /tmp/broot-git-watch-and-inline-stats.patch \
-  && git apply /tmp/broot-confine-root.patch \
-  && git apply /tmp/broot-editor-pane-integration.patch \
-  && git apply /tmp/broot-context-gutter.patch \
-  && git apply /tmp/broot-git-context-gutter-layout.patch \
-  && cargo build --release --locked
+RUN --mount=type=cache,target=/usr/local/cargo/registry,sharing=locked \
+    --mount=type=cache,target=/usr/local/cargo/git,sharing=locked \
+    cargo fetch --locked
+COPY patches/ /tmp/patches/
+RUN --mount=type=cache,target=/usr/local/cargo/registry,sharing=locked \
+    --mount=type=cache,target=/usr/local/cargo/git,sharing=locked \
+    --mount=type=cache,target=/src/broot/target,sharing=locked \
+    git apply /tmp/patches/broot-selection-output.patch \
+  && git apply /tmp/patches/broot-git-watch-and-inline-stats.patch \
+  && git apply /tmp/patches/broot-confine-root.patch \
+  && git apply /tmp/patches/broot-editor-pane-integration.patch \
+  && git apply /tmp/patches/broot-context-gutter.patch \
+  && git apply /tmp/patches/broot-git-context-gutter-layout.patch \
+  && cargo build --release --locked \
+  && install -D /src/broot/target/release/broot /tmp/broot-bin/broot
 
 FROM node:22-bookworm-slim
 
@@ -75,7 +79,7 @@ RUN arch="$(dpkg --print-architecture)" \
   && ln -sf "/opt/nvim-linux-${nvim_arch}/bin/nvim" /usr/local/bin/nvim \
   && rm -f /tmp/nvim.tar.gz
 
-COPY --from=broot-builder /src/broot/target/release/broot /usr/local/bin/broot
+COPY --from=broot-builder /tmp/broot-bin/broot /usr/local/bin/broot
 
 RUN npm install -g \
     @openai/codex@${CODEX_VERSION} \

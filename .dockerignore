@@ -1,9 +1,5 @@
-.git
-.codex-home
-node_modules
-__pycache__
-*.pyc
-*.pyo
-*.swp
-*.swo
-.DS_Store
+*
+!.dockerignore
+!Dockerfile
+!patches/
+!patches/**
