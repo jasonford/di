@@ -2,8 +2,15 @@
 set -euo pipefail
 
 SCRIPT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-SESSION_NAME="${CODEX_TMUX_SESSION:-codex}"
 WORKDIR="${WORKDIR:-$SCRIPT_ROOT}"
+default_repo_name="$(basename -- "$WORKDIR")"
+case "$default_repo_name" in
+  ""|/|.)
+    default_repo_name="workspace"
+    ;;
+esac
+REPO_NAME="${CODEX_REPO_NAME:-$default_repo_name}"
+SESSION_NAME="${CODEX_TMUX_SESSION:-dint-$REPO_NAME}"
 MODEL="${MODEL:-gpt-5.4}"
 TMUX_CONFIG="${TMUX_CONFIG:-$SCRIPT_ROOT/.tmux/tmux.conf}"
 BROOT_PREVIEW_PANE_PERCENT="${BROOT_PREVIEW_PANE_PERCENT:-35}"
@@ -82,16 +89,20 @@ if ! "${tmux_cmd[@]}" has-session -t "$SESSION_NAME" 2>/dev/null; then
   rm -f "$editor_socket"
   "$SCRIPT_ROOT/bin/codex-prepare-broot-config" "$runtime_dir/xdg-config"
   "${tmux_cmd[@]}" new-session -d -s "$SESSION_NAME" -c "$WORKDIR" "${codex_cmd[@]}"
-  "${tmux_cmd[@]}" rename-window -t "$SESSION_NAME:0" workspace
+  window_id="$("${tmux_cmd[@]}" display-message -p -t "$SESSION_NAME:0" '#{window_id}')"
+  "${tmux_cmd[@]}" rename-window -t "$window_id" "$REPO_NAME"
+  codex_pane="$("${tmux_cmd[@]}" display-message -p -t "$window_id" '#{pane_id}')"
   "${tmux_cmd[@]}" set-option -t "$SESSION_NAME" remain-on-exit on
   "${tmux_cmd[@]}" set-option -t "$SESSION_NAME" @broot_runtime_dir "$runtime_dir"
   "${tmux_cmd[@]}" set-option -t "$SESSION_NAME" @broot_workspace_dir "$WORKDIR"
   "${tmux_cmd[@]}" set-option -t "$SESSION_NAME" @broot_preview_diff_mode "$BROOT_PREVIEW_DIFF_MODE"
   "${tmux_cmd[@]}" set-option -t "$SESSION_NAME" @broot_selection_output "$selection_output"
-  "${tmux_cmd[@]}" set-option -t "$SESSION_NAME" @codex_pane_id "$("${tmux_cmd[@]}" display-message -p -t "$SESSION_NAME:workspace.0" '#{pane_id}')"
+  "${tmux_cmd[@]}" set-option -t "$SESSION_NAME" @codex_repo_name "$REPO_NAME"
+  "${tmux_cmd[@]}" set-option -t "$SESSION_NAME" @codex_window_id "$window_id"
+  "${tmux_cmd[@]}" set-option -t "$SESSION_NAME" @codex_pane_id "$codex_pane"
   "${tmux_cmd[@]}" set-option -t "$SESSION_NAME" @codex_nvim_socket "$editor_socket"
   "${tmux_cmd[@]}" set-option -t "$SESSION_NAME" @codex_nvim_state_file "$editor_state_file"
-  broot_pane="$("${tmux_cmd[@]}" split-window -h -P -F '#{pane_id}' -t "$SESSION_NAME:workspace.0" -c "$WORKDIR" "${broot_cmd[@]}")"
+  broot_pane="$("${tmux_cmd[@]}" split-window -h -P -F '#{pane_id}' -t "$window_id" -c "$WORKDIR" "${broot_cmd[@]}")"
   preview_pane="$("${tmux_cmd[@]}" split-window -v -P -F '#{pane_id}' -p "$BROOT_PREVIEW_PANE_PERCENT" -t "$broot_pane" -c "$WORKDIR" 'tail -f /dev/null')"
   "${tmux_cmd[@]}" set-option -t "$SESSION_NAME" @broot_pane_id "$broot_pane"
   "${tmux_cmd[@]}" set-option -t "$SESSION_NAME" @broot_preview_pane_id "$preview_pane"
@@ -108,7 +119,7 @@ if ! "${tmux_cmd[@]}" has-session -t "$SESSION_NAME" 2>/dev/null; then
   printf -v preview_watch_shell '%q ' "${preview_watch_cmd[@]}"
   "${tmux_cmd[@]}" run-shell -b "$preview_watch_shell"
   "$SCRIPT_ROOT/bin/codex-layout" two-column "$SESSION_NAME"
-  "${tmux_cmd[@]}" select-pane -t "$SESSION_NAME:workspace.0"
+  "${tmux_cmd[@]}" select-pane -t "$codex_pane"
 fi
 
 "${tmux_cmd[@]}" source-file "$TMUX_CONFIG"

@@ -34,7 +34,8 @@ chmod +x develop
 ## Notes
 
 - Codex auth persists in `.codex-home/.codex`
-- The tmux session name defaults to `codex`; override it with `TMUX_SESSION_NAME=... ./develop`
+- The launcher mounts the repo at `/<repo-name>` by default; override it with `WORKDIR=...`
+- The tmux session name defaults to `dint-<repo-name>`; override it with `TMUX_SESSION_NAME=... ./develop`
 - Set `CODEX_NO_ALT_SCREEN=0 ./develop` to restore alternate-screen mode
 - The image installs Neovim from the upstream release tarball
 - The image pins `@openai/codex` to `0.114.0`
@@ -42,7 +43,7 @@ chmod +x develop
 - The bundled broot patches track `v1.55.0`; if you change `BROOT_VERSION`, you may need to refresh the files in `patches/`
 - Override the preview pane height with `BROOT_PREVIEW_PANE_PERCENT=... ./develop`
 - Override the initial preview diff mode with `BROOT_PREVIEW_DIFF_MODE=auto|unstaged|staged ./develop`
-- Switch preview diff mode live with `tmux set -t codex @broot_preview_diff_mode staged`, `unstaged`, or `auto`
+- Switch preview diff mode live with `tmux set -t dint-<repo-name> @broot_preview_diff_mode staged`, `unstaged`, or `auto`
 - `staged` and `unstaged` act as preferences; if the selected tracked file only has changes in the other scope, the preview still renders that diff instead of falling back to a plain text preview
 - This improves tmux scrolling and redraw behavior, but does not fully eliminate upstream live-resize quirks in Codex itself
 - Docker cache avoids redoing the expensive build layers when unchanged

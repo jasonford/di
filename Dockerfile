@@ -92,5 +92,5 @@ RUN nvim --version \
   && broot --version \
   && ln -sf /usr/local/bin/nvim /usr/local/bin/vim
 
-WORKDIR /workspace
+WORKDIR /
 CMD ["codex"]

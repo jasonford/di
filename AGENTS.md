@@ -8,6 +8,6 @@ When the user wants to edit or open a file in Neovim, launch `nvim <path>`.
 
 The repo this file is in defines a command ./develop that launches a developer interface in a docker container that starts up a tmux session pre-configured with codex and a broot pane that is limited to working on just the files in this repo.
 
-When this directory is mounted as /workspace, perform all edits on this repo because the intention is to make modifications to this repo that can be saved in this git repo.
+When this directory is mounted into the container, perform all edits on the mounted repo root because the intention is to make modifications to this repo that can be saved in this git repo. By default, the launcher mounts it at /<repo-name>.
 
 You are running inside the docker container with a tmux session that this repository defines. You may take advantage of that to explore the panels and test things in place.

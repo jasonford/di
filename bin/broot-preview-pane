@@ -289,14 +289,6 @@ print_header() {
   printf '\n'
 }
 
-prompt_user() {
-  id -un 2>/dev/null || printf '%s' "${USER:-dev}"
-}
-
-prompt_host() {
-  hostname -s 2>/dev/null || hostname 2>/dev/null || printf 'host'
-}
-
 prompt_path() {
   local path="$1"
   local home_dir="${HOME:-}"
@@ -317,16 +309,8 @@ prompt_path() {
   printf '%s' "$path"
 }
 
-prompt_symbol() {
-  local uid="1"
-
-  uid="$(id -u 2>/dev/null || printf '1')"
-  if [ "$uid" -eq 0 ]; then
-    printf '#'
-    return
-  fi
-
-  printf '$'
+prompt_chevron() {
+  printf '\u276f'
 }
 
 render_empty() {
@@ -352,18 +336,14 @@ render_special() {
 
 render_directory() {
   local path="$1"
-  local user_name=""
-  local host_name=""
   local cwd_display=""
-  local symbol=""
+  local chevron=""
 
-  user_name="$(prompt_user)"
-  host_name="$(prompt_host)"
   cwd_display="$(prompt_path "$path")"
-  symbol="$(prompt_symbol)"
+  chevron="$(prompt_chevron)"
 
   print_header "$path" "Shell prompt"
-  printf '%s@%s:%s%s ' "$user_name" "$host_name" "$cwd_display" "$symbol"
+  printf '%s %s ' "$cwd_display" "$chevron"
 }
 
 render_text() {
@@ -522,7 +502,7 @@ render_preview() {
     if [ -n "$repo_root" ]; then
       rel_path="$(relative_to_repo "$resolved_path" "$repo_root" || true)"
     fi
-    render_directory "$resolved_path" "$repo_root" "$rel_path"
+    render_directory "$resolved_path"
     return
   fi
 
@@ -603,9 +583,12 @@ spawn_static_preview() {
 spawn_directory_shell() {
   local pane="$1"
   local path="$2"
-  local inner_cmd='export PS1="\\u@\\h:\\w\\$ "; exec bash --noprofile --norc -i'
+  local chevron=""
+  local inner_cmd=""
   local respawn_cmd=""
 
+  chevron="$(prompt_chevron)"
+  printf -v inner_cmd "export PS1=\$'\\\\w %s '; exec bash --noprofile --norc -i" "$chevron"
   printf -v respawn_cmd 'bash -lc %q' "$inner_cmd"
   clear_tmux_history "$pane"
   tmux respawn-pane -k -t "$pane" -c "$path" "$respawn_cmd" >/dev/null

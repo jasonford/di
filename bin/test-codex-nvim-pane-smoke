@@ -15,10 +15,21 @@ real_nvim="$(command -v nvim)"
 nvim_wrapper_dir="$tmp_dir/bin"
 test_path="$nvim_wrapper_dir:$PATH"
 remote_log="$tmp_dir/nvim-remote.log"
+window_name="repo-window"
 codex_pane=""
 broot_pane=""
 preview_pane=""
 editor_pane=""
+
+window_target() {
+  local target
+  target="$("${tmux_cmd[@]}" show-options -qv -t "$TMUX_SESSION_NAME" @codex_window_id)"
+  if [ -n "$target" ]; then
+    printf '%s\n' "$target"
+    return 0
+  fi
+  printf '%s\n' "$TMUX_SESSION_NAME:0"
+}
 
 cleanup() {
   "${tmux_cmd[@]}" kill-session -t "$TMUX_SESSION_NAME" >/dev/null 2>&1 || true
@@ -42,7 +53,7 @@ window_width() {
 }
 
 active_pane() {
-  "${tmux_cmd[@]}" display-message -p -t "$TMUX_SESSION_NAME:workspace" '#{pane_id}'
+  "${tmux_cmd[@]}" display-message -p -t "$(window_target)" '#{pane_id}'
 }
 
 pane_dead() {
@@ -168,12 +179,15 @@ launch_tmux() {
   : >"$remote_log"
 
   "${tmux_cmd[@]}" new-session -d -s "$TMUX_SESSION_NAME" -x 120 -y 40 'bash'
-  "${tmux_cmd[@]}" rename-window -t "$TMUX_SESSION_NAME:0" workspace
+  window_id="$("${tmux_cmd[@]}" display-message -p -t "$TMUX_SESSION_NAME:0" '#{window_id}')"
+  "${tmux_cmd[@]}" rename-window -t "$window_id" "$window_name"
   "${tmux_cmd[@]}" set-environment -t "$TMUX_SESSION_NAME" PATH "$test_path"
-  codex_pane="$("${tmux_cmd[@]}" display-message -p -t "$TMUX_SESSION_NAME:0.0" '#{pane_id}')"
+  codex_pane="$("${tmux_cmd[@]}" display-message -p -t "$window_id" '#{pane_id}')"
   broot_pane="$("${tmux_cmd[@]}" split-window -d -h -P -F '#{pane_id}' -t "$codex_pane" 'bash')"
   preview_pane="$("${tmux_cmd[@]}" split-window -d -v -P -F '#{pane_id}' -p 35 -t "$broot_pane" 'bash')"
 
+  "${tmux_cmd[@]}" set-option -t "$TMUX_SESSION_NAME" @codex_repo_name "$window_name"
+  "${tmux_cmd[@]}" set-option -t "$TMUX_SESSION_NAME" @codex_window_id "$window_id"
   "${tmux_cmd[@]}" set-option -t "$TMUX_SESSION_NAME" @codex_pane_id "$codex_pane"
   "${tmux_cmd[@]}" set-option -t "$TMUX_SESSION_NAME" @broot_pane_id "$broot_pane"
   "${tmux_cmd[@]}" set-option -t "$TMUX_SESSION_NAME" @broot_preview_pane_id "$preview_pane"

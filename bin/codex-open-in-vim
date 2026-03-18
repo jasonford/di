@@ -33,6 +33,7 @@ socket_path="$(tmux_option @codex_nvim_socket)"
 state_file="$(tmux_option @codex_nvim_state_file)"
 nvim_pane="$(tmux_option @codex_nvim_pane_id)"
 codex_pane="$(tmux_option @codex_pane_id)"
+window_id="$(tmux_option @codex_window_id)"
 
 selected_path="${1:-}"
 if [ -z "$selected_path" ] && [ -n "$selection_file" ] && [ -f "$selection_file" ]; then
@@ -67,11 +68,12 @@ if pane_live "$nvim_pane"; then
   tmux kill-pane -t "$nvim_pane" >/dev/null 2>&1 || true
 fi
 
-window_width="$(tmux display-message -p -t "$session_name:workspace" '#{window_width}')"
+window_target="${window_id:-$codex_pane}"
+window_width="$(tmux display-message -p -t "$window_target" '#{window_width}')"
 side_width="$(( (window_width - 2) / 3 ))"
 nvim_pane="$(
   tmux split-window -d -h -f -l "$side_width" -P -F '#{pane_id}' \
-    -t "$session_name:workspace" \
+    -t "$window_target" \
     -c "$workspace_dir" \
     -e CODEX_NVIM_INITIAL_PATH="$selected_path" \
     -e CODEX_TMUX_SESSION="$session_name" \

@@ -3,7 +3,6 @@ set -euo pipefail
 
 IMAGE="${IMAGE:-codex-dev}"
 CONTAINER_NAME="${CONTAINER_NAME:-codex-dev}"
-WORKDIR="${WORKDIR:-/workspace}"
 CODEX_VERSION="${CODEX_VERSION:-0.114.0}"
 BROOT_VERSION="${BROOT_VERSION:-v1.55.0}"
 MODEL="${MODEL:-gpt-5.4}"
@@ -11,11 +10,13 @@ ALLOW_NET="${ALLOW_NET:-1}"
 CODEX_NO_ALT_SCREEN="${CODEX_NO_ALT_SCREEN:-1}"
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_NAME="$(basename -- "$SCRIPT_DIR")"
+WORKDIR="${WORKDIR:-/$REPO_NAME}"
 STATE_DIR="$SCRIPT_DIR/.codex-home"
 CODEX_DIR="$STATE_DIR/.codex"
 CACHE_DIR="$STATE_DIR/.cache"
 LOCAL_STATE_DIR="$STATE_DIR/.local/state"
-TMUX_SESSION_NAME="${TMUX_SESSION_NAME:-codex}"
+TMUX_SESSION_NAME="${TMUX_SESSION_NAME:-dint-$REPO_NAME}"
 
 mkdir -p "$CODEX_DIR" "$CACHE_DIR" "$LOCAL_STATE_DIR"
 
@@ -54,6 +55,7 @@ if [ "${1:-}" = "login" ]; then
     -e VISUAL=nvim \
     -e EDITOR=nvim \
     -e TERM="${TERM:-xterm-256color}" \
+    -e CODEX_REPO_NAME="$REPO_NAME" \
     -u "$(id -u):$(id -g)" \
     "$IMAGE" \
     codex login --device-auth "$@"
@@ -80,6 +82,7 @@ exec docker run --rm -it \
   -e BROOT_PREVIEW_DIFF_MODE="${BROOT_PREVIEW_DIFF_MODE:-auto}" \
   -e MODEL="$MODEL" \
   -e CODEX_NO_ALT_SCREEN="$CODEX_NO_ALT_SCREEN" \
+  -e CODEX_REPO_NAME="$REPO_NAME" \
   -e CODEX_TMUX_SESSION="$TMUX_SESSION_NAME" \
   -u "$(id -u):$(id -g)" \
   "$IMAGE" \

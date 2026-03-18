@@ -12,6 +12,7 @@ repo_root="$tmp_dir/repo"
 selection_file="$tmp_dir/selection.txt"
 preview_pane=""
 last_capture=""
+prompt_chevron=$'\u276f'
 
 cleanup() {
   "${tmux_cmd[@]}" kill-session -t "$TMUX_SESSION_NAME" >/dev/null 2>&1 || true
@@ -135,6 +136,10 @@ fail_with_capture() {
   exit 1
 }
 
+strip_ansi_stream() {
+  sed $'s/\033\\[[0-9;?]*[ -/]*[@-~]//g'
+}
+
 set_selection() {
   printf '%s\n' "$1" >"$selection_file"
 }
@@ -208,6 +213,21 @@ require_command tmux
 init_repo
 launch_tmux
 
+directory_preview_output="$("$SCRIPT_ROOT/bin/broot-preview-pane" --path "$repo_root/sub dir" --base-dir "$repo_root")"
+directory_prompt_line="$(printf '%s\n' "$directory_preview_output" | strip_ansi_stream | tail -n 1)"
+expected_directory_prompt="$repo_root/sub dir $prompt_chevron "
+if [ "$directory_prompt_line" != "$expected_directory_prompt" ]; then
+  printf 'direct directory preview rendered an unexpected prompt\n' >&2
+  printf 'expected: %s\n' "$expected_directory_prompt" >&2
+  printf 'actual:   %s\n' "$directory_prompt_line" >&2
+  exit 1
+fi
+if printf '%s\n' "$directory_prompt_line" | grep -Eq '[@:$#]'; then
+  printf 'direct directory preview prompt retained removed prompt prefix text\n' >&2
+  printf 'prompt: %s\n' "$directory_prompt_line" >&2
+  exit 1
+fi
+
 if ! wait_for_regex 'No selection'; then
   fail_with_capture 'preview pane never rendered the empty state'
 fi
@@ -263,7 +283,7 @@ if ! wait_for_regex 'Hex Preview'; then
 fi
 
 set_selection "$repo_root/sub dir"
-if ! wait_for_regex 'sub dir[$#]'; then
+if ! wait_for_regex "sub dir $prompt_chevron"; then
   fail_with_capture 'directory preview prompt did not switch to the selected directory'
 fi
 if ! wait_for_command 'bash'; then
@@ -281,7 +301,7 @@ if ! wait_for_command 'tail'; then
   fail_with_capture 'file preview did not return the pane to the static hold state'
 fi
 capture_history
-if printf '%s\n' "$last_capture" | grep -Eq 'sub dir[$#]'; then
+if printf '%s\n' "$last_capture" | grep -Eq "sub dir $prompt_chevron"; then
   fail_with_capture 'directory shell prompt remained in pane history after switching back to a file preview'
 fi
 
