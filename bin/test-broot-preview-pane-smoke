@@ -215,7 +215,7 @@ launch_tmux
 
 directory_preview_output="$("$SCRIPT_ROOT/bin/broot-preview-pane" --path "$repo_root/sub dir" --base-dir "$repo_root")"
 directory_prompt_line="$(printf '%s\n' "$directory_preview_output" | strip_ansi_stream | tail -n 1)"
-expected_directory_prompt="$repo_root/sub dir $prompt_chevron "
+expected_directory_prompt="$repo_root/sub dir $prompt_chevron  "
 if [ "$directory_prompt_line" != "$expected_directory_prompt" ]; then
   printf 'direct directory preview rendered an unexpected prompt\n' >&2
   printf 'expected: %s\n' "$expected_directory_prompt" >&2

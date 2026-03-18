@@ -310,7 +310,7 @@ prompt_path() {
 }
 
 prompt_chevron() {
-  printf '\u276f'
+  printf '%b' '\342\235\257'
 }
 
 render_empty() {
@@ -343,7 +343,7 @@ render_directory() {
   chevron="$(prompt_chevron)"
 
   print_header "$path" "Shell prompt"
-  printf '%s %s ' "$cwd_display" "$chevron"
+  printf '%s %s  ' "$cwd_display" "$chevron"
 }
 
 render_text() {
@@ -588,7 +588,7 @@ spawn_directory_shell() {
   local respawn_cmd=""
 
   chevron="$(prompt_chevron)"
-  printf -v inner_cmd "export PS1=\$'\\\\w %s '; exec bash --noprofile --norc -i" "$chevron"
+  printf -v inner_cmd "export PS1='\\\\w %s  '; exec bash --noprofile --norc -i" "$chevron"
   printf -v respawn_cmd 'bash -lc %q' "$inner_cmd"
   clear_tmux_history "$pane"
   tmux respawn-pane -k -t "$pane" -c "$path" "$respawn_cmd" >/dev/null
