@@ -58,6 +58,11 @@ cleanup() {
 trap cleanup EXIT HUP INT TERM
 
 mkdir -p "$HOME" "$XDG_CONFIG_HOME" "$XDG_CACHE_HOME" "$XDG_DATA_HOME" "$XDG_STATE_HOME"
+repo_nvim_config="$workspace_dir/config/nvim"
+if [ -d "$repo_nvim_config" ]; then
+  rm -rf "$XDG_CONFIG_HOME/nvim"
+  ln -s "$repo_nvim_config" "$XDG_CONFIG_HOME/nvim"
+fi
 mkdir -p "$(dirname "$state_file")"
 : >"$state_file"
 rm -f "$socket_path"

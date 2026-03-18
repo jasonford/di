@@ -42,6 +42,7 @@ if [ "${1:-}" = "login" ]; then
     --name "$CONTAINER_NAME-login" \
     --init \
     --mount "type=bind,src=$SCRIPT_DIR,dst=$WORKDIR" \
+    --mount "type=bind,src=$SCRIPT_DIR/config/nvim,dst=/home/dev/.config/nvim" \
     --mount "type=bind,src=$CODEX_DIR,dst=/home/dev/.codex" \
     --mount "type=bind,src=$CACHE_DIR,dst=/home/dev/.cache" \
     --mount "type=bind,src=$LOCAL_STATE_DIR,dst=/home/dev/.local/state" \
@@ -63,6 +64,7 @@ exec docker run --rm -it \
   --name "$CONTAINER_NAME" \
   --init \
   --mount "type=bind,src=$SCRIPT_DIR,dst=$WORKDIR" \
+  --mount "type=bind,src=$SCRIPT_DIR/config/nvim,dst=/home/dev/.config/nvim" \
   --mount "type=bind,src=$CODEX_DIR,dst=/home/dev/.codex" \
   --mount "type=bind,src=$CACHE_DIR,dst=/home/dev/.cache" \
   --mount "type=bind,src=$LOCAL_STATE_DIR,dst=/home/dev/.local/state" \
