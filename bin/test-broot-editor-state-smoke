@@ -183,16 +183,24 @@ assert_no_trailing_stats 'alpha\.txt'
 assert_no_trailing_stats 'beta\.txt'
 
 printf '0\t%s\n' "$repo_root/alpha.txt" >"$editor_state_file"
-if ! wait_for_literal 'M+1-0=├──alpha.txt'; then
-  fail_with_capture 'clean editor marker never appeared in broot'
+sleep 0.2
+if ! wait_for_absent_regex '[=*].*alpha\.txt$'; then
+  fail_with_capture 'clean editor state should no longer print a gutter marker'
+fi
+if ! wait_for_literal 'M+1-0 ├──alpha.txt'; then
+  fail_with_capture 'clean editor state shifted the alpha.txt gutter layout'
 fi
 assert_aligned_name_columns 'folder' 'alpha.txt'
 assert_aligned_name_columns 'alpha.txt' 'beta.txt'
 assert_no_trailing_stats 'alpha\.txt'
 
 printf '1\t%s\n' "$repo_root/alpha.txt" >"$editor_state_file"
-if ! wait_for_literal 'M+1-0*├──alpha.txt'; then
-  fail_with_capture 'modified editor marker never appeared in broot'
+sleep 0.2
+if ! wait_for_absent_regex '[=*].*alpha\.txt$'; then
+  fail_with_capture 'modified editor state should no longer print a gutter marker'
+fi
+if ! wait_for_literal 'M+1-0 ├─•alpha.txt'; then
+  fail_with_capture 'modified editor state did not replace the final branch segment with a dot'
 fi
 assert_aligned_name_columns 'folder' 'alpha.txt'
 assert_aligned_name_columns 'alpha.txt' 'beta.txt'
@@ -208,5 +216,25 @@ fi
 assert_aligned_name_columns 'folder' 'alpha.txt'
 assert_aligned_name_columns 'alpha.txt' 'beta.txt'
 assert_no_trailing_stats 'alpha\.txt'
+
+for idx in $(seq -w 1 30); do
+  mkdir -p "$repo_root/pruned-$idx"
+  printf 'nested\n' >"$repo_root/pruned-$idx/nested.txt"
+done
+
+if ! wait_for_regex '[0-9]+ unlisted$'; then
+  fail_with_capture 'broot never rendered a pruning row after adding many directories'
+fi
+
+printf '1\t%s\n' "$repo_root/pruned-30/nested.txt" >"$editor_state_file"
+sleep 0.2
+if ! wait_for_regex '•[0-9]+ unlisted$'; then
+  fail_with_capture 'modified hidden editor state did not propagate to the pruning row'
+fi
+
+: >"$editor_state_file"
+if ! wait_for_absent_regex '•[0-9]+ unlisted$'; then
+  fail_with_capture 'pruning row editor marker did not clear when the state file was emptied'
+fi
 
 printf 'broot editor state smoke test passed\n'
