@@ -59,7 +59,7 @@ index b472af7..5982ec9 100644
          }
      }
 diff --git a/src/display/displayable_tree.rs b/src/display/displayable_tree.rs
-index aadee06..6205103 100644
+index aadee06..346a557 100644
 --- a/src/display/displayable_tree.rs
 +++ b/src/display/displayable_tree.rs
 @@ -218,16 +218,16 @@ impl<'a, 's, 't> DisplayableTree<'a, 's, 't> {
@@ -85,7 +85,7 @@ index aadee06..6205103 100644
                  Some(Status::CURRENT) => (&self.skin.git_status_current, ' '),
                  Some(Status::WT_NEW) => (&self.skin.git_status_new, 'N'),
                  Some(Status::CONFLICTED) => (&self.skin.git_status_conflicted, 'C'),
-@@ -236,31 +236,49 @@ impl<'a, 's, 't> DisplayableTree<'a, 's, 't> {
+@@ -236,31 +236,76 @@ impl<'a, 's, 't> DisplayableTree<'a, 's, 't> {
                  None => (&self.skin.tree, ' '),
                  _ => (&self.skin.git_status_other, '?'),
              }
@@ -148,10 +148,37 @@ index aadee06..6205103 100644
 +        } else {
 +            insertions_width + format!("-{}", diff_stats.deletions).len()
 +        }
++    }
++
++    fn branch_open_segment_style(
++        &self,
++        line: &TreeLine,
++        selected: bool,
++    ) -> Option<CompoundStyle> {
++        let Some(_) = line.context_mark else {
++            return None;
++        };
++        let mut style = self.skin.git_status_modified.clone();
++        if selected {
++            if let Some(c) = self.skin.selected_line.get_bg() {
++                style.set_bg(c);
++            }
++        }
++        Some(style)
++    }
++
++    fn branch_open_segment_char(
++        &self,
++        line: &TreeLine,
++    ) -> char {
++        match line.context_mark {
++            Some(ContextGutterMark::EditorModified) => '•',
++            _ => '─',
++        }
      }
  
      fn write_date<W: Write>(
-@@ -290,56 +308,67 @@ impl<'a, 's, 't> DisplayableTree<'a, 's, 't> {
+@@ -290,56 +335,67 @@ impl<'a, 's, 't> DisplayableTree<'a, 's, 't> {
          staged: bool,
      ) -> Result<usize, ProgramError> {
          cond_bg!(branch_style, self, selected, self.skin.tree);
@@ -254,7 +281,7 @@ index aadee06..6205103 100644
          Ok(0)
      }
  
-@@ -417,7 +446,6 @@ impl<'a, 's, 't> DisplayableTree<'a, 's, 't> {
+@@ -417,7 +473,6 @@ impl<'a, 's, 't> DisplayableTree<'a, 's, 't> {
              }
              _ => {}
          }
@@ -262,7 +289,7 @@ index aadee06..6205103 100644
          Ok(1)
      }
  
-@@ -536,6 +564,13 @@ impl<'a, 's, 't> DisplayableTree<'a, 's, 't> {
+@@ -536,6 +591,13 @@ impl<'a, 's, 't> DisplayableTree<'a, 's, 't> {
              f.queue(cursor::MoveTo(self.area.left, self.area.top))?;
          }
          let mut cw = CropWriter::new(f, self.area.width as usize);
@@ -276,7 +303,7 @@ index aadee06..6205103 100644
          let pattern_object = tree.options.pattern.pattern.object();
          self.write_root_line(&mut cw, self.in_app && tree.selection == 0)?;
          self.skin.queue_reset(f)?;
-@@ -658,7 +693,13 @@ impl<'a, 's, 't> DisplayableTree<'a, 's, 't> {
+@@ -658,7 +720,13 @@ impl<'a, 's, 't> DisplayableTree<'a, 's, 't> {
                          Col::Count => self.write_line_count(cw, line, count_len, selected)?,
  
                          Col::Staged => {
@@ -291,7 +318,7 @@ index aadee06..6205103 100644
                          }
  
                          Col::Name => {
-@@ -707,3 +748,307 @@ impl<'a, 's, 't> DisplayableTree<'a, 's, 't> {
+@@ -707,3 +775,307 @@ impl<'a, 's, 't> DisplayableTree<'a, 's, 't> {
          Ok(())
      }
  }
