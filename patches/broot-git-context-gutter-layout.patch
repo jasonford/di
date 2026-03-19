@@ -18,7 +18,7 @@ index 3057454..962ac9a 100644
 +    }
  }
 diff --git a/src/display/col.rs b/src/display/col.rs
-index b472af7..3dd7733 100644
+index b472af7..5982ec9 100644
 --- a/src/display/col.rs
 +++ b/src/display/col.rs
 @@ -68,8 +68,8 @@ pub static DEFAULT_COLS: Cols = [
@@ -40,23 +40,29 @@ index b472af7..3dd7733 100644
              Col::DeviceId => tree_options.show_device_id,
              Col::Size => tree_options.show_sizes,
              Col::Date => tree_options.show_dates,
-@@ -139,7 +139,10 @@ impl Col {
+@@ -139,7 +139,16 @@ impl Col {
              Col::Count => tree_options.show_counts,
              Col::Branch => true,
              //Col::Staged => app_state.map_or(false, |a| !a.stage.is_empty()),
 -            Col::Staged => tree.lines.iter().any(|line| line.context_mark.is_some()),
-+            Col::Staged => tree
-+                .lines
-+                .iter()
-+                .any(|line| !line.is_dir() && line.git_status.is_some()),
++            Col::Staged => tree.lines.iter().any(|line| {
++                let git_status = if line.is_dir() {
++                    line.unlisted_git_status
++                } else {
++                    line.git_status
++                };
++                git_status
++                    .and_then(|git_status| git_status.diff_stats)
++                    .is_some_and(|diff_stats| diff_stats.has_changes())
++            }),
              Col::Name => true,
          }
      }
 diff --git a/src/display/displayable_tree.rs b/src/display/displayable_tree.rs
-index aadee06..97d7918 100644
+index aadee06..6205103 100644
 --- a/src/display/displayable_tree.rs
 +++ b/src/display/displayable_tree.rs
-@@ -218,13 +218,11 @@ impl<'a, 's, 't> DisplayableTree<'a, 's, 't> {
+@@ -218,16 +218,16 @@ impl<'a, 's, 't> DisplayableTree<'a, 's, 't> {
          })
      }
  
@@ -72,8 +78,14 @@ index aadee06..97d7918 100644
 +        if !line.is_selectable() && !matches!(line.line_type, TreeLineType::Pruning) {
              (&self.skin.tree, ' ')
          } else {
-             match line.git_status.and_then(|status| status.display_status()) {
-@@ -236,31 +234,66 @@ impl<'a, 's, 't> DisplayableTree<'a, 's, 't> {
+-            match line.git_status.and_then(|status| status.display_status()) {
++            match Self::line_context_gutter_git_status(line)
++                .and_then(|status| status.display_status())
++            {
+                 Some(Status::CURRENT) => (&self.skin.git_status_current, ' '),
+                 Some(Status::WT_NEW) => (&self.skin.git_status_new, 'N'),
+                 Some(Status::CONFLICTED) => (&self.skin.git_status_conflicted, 'C'),
+@@ -236,31 +236,49 @@ impl<'a, 's, 't> DisplayableTree<'a, 's, 't> {
                  None => (&self.skin.tree, ' '),
                  _ => (&self.skin.git_status_other, '?'),
              }
@@ -85,6 +97,16 @@ index aadee06..97d7918 100644
      }
  
 -    fn write_line_diff_stats<W: Write>(
++    fn line_context_gutter_git_status(
++        line: &TreeLine,
++    ) -> Option<crate::git::LineGitStatus> {
++        if line.is_dir() {
++            line.unlisted_git_status
++        } else {
++            line.git_status
++        }
++    }
++
 +    fn write_line_git_status<W: Write>(
          &self,
          cw: &mut CropWriter<W>,
@@ -92,6 +114,8 @@ index aadee06..97d7918 100644
          selected: bool,
 -    ) -> Result<(), ProgramError> {
 -        let Some(diff_stats) = line
+-            .git_status
+-            .and_then(|git_status| git_status.diff_stats)
 +    ) -> Result<usize, termimad::Error> {
 +        let (style, char) = self.line_git_status_display(line);
 +        cond_bg!(git_style, self, selected, style);
@@ -100,34 +124,15 @@ index aadee06..97d7918 100644
 +    }
 +
 +    fn line_diff_stats_width(line: &TreeLine) -> usize {
-+        line
-             .git_status
-             .and_then(|git_status| git_status.diff_stats)
++        let Some(git_status) = Self::line_context_gutter_git_status(line) else {
++            return 0;
++        };
++        let Some(diff_stats) = git_status
++            .diff_stats
              .filter(|diff_stats| diff_stats.has_changes())
--        else {
+         else {
 -            return Ok(());
-+            .map(|diff_stats| format!("+{}-{}", diff_stats.insertions, diff_stats.deletions).len())
-+            .unwrap_or(0)
-+    }
-+
-+    fn write_blank_context_gutter<W: Write>(
-+        &self,
-+        cw: &mut CropWriter<W>,
-+        label_style: &CompoundStyle,
-+        stats_width: usize,
-+    ) -> Result<usize, termimad::Error> {
-+        let blank_width = 1 + stats_width;
-+        cw.repeat(label_style, &SPACE_FILLING, blank_width)?;
-+        Ok(0)
-+    }
-+
-+    fn branch_open_segment_style(
-+        &self,
-+        line: &TreeLine,
-+        selected: bool,
-+    ) -> Option<CompoundStyle> {
-+        let Some(context_mark) = line.context_mark else {
-+            return None;
++            return 0;
          };
 -        cond_bg!(insertions_style, self, selected, self.skin.git_insertions);
 -        cond_bg!(deletions_style, self, selected, self.skin.git_deletions);
@@ -135,27 +140,18 @@ index aadee06..97d7918 100644
 -        cw.queue_g_string(insertions_style, format!("+{}", diff_stats.insertions))?;
 -        cw.queue_g_string(deletions_style, format!("-{}", diff_stats.deletions))?;
 -        Ok(())
-+        let mut style = self.skin.git_status_modified.clone();
-+        if selected {
-+            if let Some(c) = self.skin.selected_line.get_bg() {
-+                style.set_bg(c);
-+            }
-+        }
-+        Some(style)
-+    }
-+
-+    fn branch_open_segment_char(
-+        &self,
-+        line: &TreeLine,
-+    ) -> char {
-+        match line.context_mark {
-+            Some(ContextGutterMark::EditorModified) => '•',
-+            _ => '─',
++        let insertions_width = format!("+{}", diff_stats.insertions).len();
++        if matches!(git_status.display_status(), Some(Status::WT_NEW))
++            && diff_stats.deletions == 0
++        {
++            insertions_width
++        } else {
++            insertions_width + format!("-{}", diff_stats.deletions).len()
 +        }
      }
  
      fn write_date<W: Write>(
-@@ -290,56 +323,64 @@ impl<'a, 's, 't> DisplayableTree<'a, 's, 't> {
+@@ -290,56 +308,67 @@ impl<'a, 's, 't> DisplayableTree<'a, 's, 't> {
          staged: bool,
      ) -> Result<usize, ProgramError> {
          cond_bg!(branch_style, self, selected, self.skin.tree);
@@ -218,12 +214,11 @@ index aadee06..97d7918 100644
 -        let Some(context_mark) = line.context_mark else {
 -            cw.queue_char(label_style, ' ')?;
 -            cw.queue_char(label_style, ' ')?;
--            return Ok(0);
--        };
-+        let (git_style_ref, git_char) = self.line_git_status_display(line);
-+        cond_bg!(git_style, self, selected, git_style_ref);
-+        cw.queue_char(git_style, git_char)?;
- 
++        let Some(git_status) = Self::line_context_gutter_git_status(line) else {
++            cw.repeat(label_style, &SPACE_FILLING, stats_width)?;
+             return Ok(0);
+         };
+-
 -        let style = match context_mark {
 -            ContextGutterMark::EditorClean => &self.skin.git_status_current,
 -            ContextGutterMark::EditorModified => &self.skin.git_status_modified,
@@ -235,16 +230,19 @@ index aadee06..97d7918 100644
 -        cond_bg!(mark_style, self, selected, style);
 -        cw.queue_char(mark_style, mark)?;
 -        cw.queue_char(label_style, ' ')?;
-+        if let Some(diff_stats) = line
-+            .git_status
-+            .and_then(|git_status| git_status.diff_stats)
-+            .filter(|diff_stats| diff_stats.has_changes())
++        if let Some(diff_stats) = git_status.diff_stats.filter(|diff_stats| diff_stats.has_changes())
 +        {
 +            let stats_len = Self::line_diff_stats_width(line);
 +            cond_bg!(insertions_style, self, selected, self.skin.git_insertions);
-+            cond_bg!(deletions_style, self, selected, self.skin.git_deletions);
 +            cw.queue_g_string(insertions_style, format!("+{}", diff_stats.insertions))?;
-+            cw.queue_g_string(deletions_style, format!("-{}", diff_stats.deletions))?;
++            if !matches!(
++                git_status.display_status(),
++                Some(Status::WT_NEW)
++            ) || diff_stats.deletions > 0
++            {
++                cond_bg!(deletions_style, self, selected, self.skin.git_deletions);
++                cw.queue_g_string(deletions_style, format!("-{}", diff_stats.deletions))?;
++            }
 +            cw.repeat(
 +                label_style,
 +                &SPACE_FILLING,
@@ -256,7 +254,7 @@ index aadee06..97d7918 100644
          Ok(0)
      }
  
-@@ -417,7 +458,6 @@ impl<'a, 's, 't> DisplayableTree<'a, 's, 't> {
+@@ -417,7 +446,6 @@ impl<'a, 's, 't> DisplayableTree<'a, 's, 't> {
              }
              _ => {}
          }
@@ -264,7 +262,7 @@ index aadee06..97d7918 100644
          Ok(1)
      }
  
-@@ -536,6 +576,14 @@ impl<'a, 's, 't> DisplayableTree<'a, 's, 't> {
+@@ -536,6 +564,13 @@ impl<'a, 's, 't> DisplayableTree<'a, 's, 't> {
              f.queue(cursor::MoveTo(self.area.left, self.area.top))?;
          }
          let mut cw = CropWriter::new(f, self.area.width as usize);
@@ -272,37 +270,28 @@ index aadee06..97d7918 100644
 +            .lines
 +            .iter()
 +            .skip(1)
-+            .filter(|line| !line.is_dir())
 +            .map(Self::line_diff_stats_width)
 +            .max()
 +            .unwrap_or(0);
          let pattern_object = tree.options.pattern.pattern.object();
          self.write_root_line(&mut cw, self.in_app && tree.selection == 0)?;
          self.skin.queue_reset(f)?;
-@@ -658,7 +706,21 @@ impl<'a, 's, 't> DisplayableTree<'a, 's, 't> {
+@@ -658,7 +693,13 @@ impl<'a, 's, 't> DisplayableTree<'a, 's, 't> {
                          Col::Count => self.write_line_count(cw, line, count_len, selected)?,
  
                          Col::Staged => {
 -                            self.write_line_context_mark(cw, line, &label_style, selected)?
-+                            if line.is_dir() {
-+                                self.write_blank_context_gutter(
-+                                    cw,
-+                                    &label_style,
-+                                    context_gutter_stats_width,
-+                                )?
-+                            } else {
-+                                self.write_line_context_mark(
-+                                    cw,
-+                                    line,
-+                                    &label_style,
-+                                    selected,
-+                                    context_gutter_stats_width,
-+                                )?
-+                            }
++                            self.write_line_context_mark(
++                                cw,
++                                line,
++                                &label_style,
++                                selected,
++                                context_gutter_stats_width,
++                            )?
                          }
  
                          Col::Name => {
-@@ -707,3 +769,183 @@ impl<'a, 's, 't> DisplayableTree<'a, 's, 't> {
+@@ -707,3 +748,307 @@ impl<'a, 's, 't> DisplayableTree<'a, 's, 't> {
          Ok(())
      }
  }
@@ -313,7 +302,10 @@ index aadee06..97d7918 100644
 +        super::*,
 +        crate::{
 +            context_gutter::ContextGutterMark,
-+            git::LineGitStatus,
++            git::{
++                LineDiffStats,
++                LineGitStatus,
++            },
 +            skin::StyleMaps,
 +            task_sync::ComputationResult,
 +            tree::TreeOptions,
@@ -354,6 +346,24 @@ index aadee06..97d7918 100644
 +            git_status: ComputationResult::None,
 +            build_report: BuildReport::default(),
 +        };
++        let skin = StyleMap::no_term();
++        let ext_colors = ExtColorMap::default();
++        let displayable_tree = DisplayableTree::out_of_app(&tree, &skin, &ext_colors, 80, 3);
++
++        let (_, git_char) = displayable_tree.line_git_status_display(&tree.lines[1]);
++
++        assert_eq!(git_char, 'M');
++    }
++
++    #[test]
++    fn collapsed_directories_keep_hidden_git_marker_display() {
++        let tree = test_tree_with_hidden_git_status(LineGitStatus {
++            status: Some(Status::WT_MODIFIED),
++            diff_stats: Some(LineDiffStats {
++                insertions: 1,
++                deletions: 0,
++            }),
++        });
 +        let skin = StyleMap::no_term();
 +        let ext_colors = ExtColorMap::default();
 +        let displayable_tree = DisplayableTree::out_of_app(&tree, &skin, &ext_colors, 80, 3);
@@ -417,6 +427,45 @@ index aadee06..97d7918 100644
 +        assert_eq!(displayable_tree.branch_open_segment_char(&tree.lines[1]), '•');
 +    }
 +
++    #[test]
++    fn modified_files_keep_insertion_and_deletion_counts_in_gutter() {
++        let tree = test_tree_with_git_status(LineGitStatus {
++            status: Some(Status::WT_MODIFIED),
++            diff_stats: Some(LineDiffStats {
++                insertions: 1,
++                deletions: 0,
++            }),
++        });
++
++        assert_eq!(DisplayableTree::line_diff_stats_width(&tree.lines[1]), 5);
++    }
++
++    #[test]
++    fn new_files_only_use_insertion_count_in_gutter() {
++        let tree = test_tree_with_git_status(LineGitStatus {
++            status: Some(Status::WT_NEW),
++            diff_stats: Some(LineDiffStats {
++                insertions: 1,
++                deletions: 0,
++            }),
++        });
++
++        assert_eq!(DisplayableTree::line_diff_stats_width(&tree.lines[1]), 2);
++    }
++
++    #[test]
++    fn collapsed_directories_use_hidden_git_status_for_gutter_width() {
++        let tree = test_tree_with_hidden_git_status(LineGitStatus {
++            status: Some(Status::WT_MODIFIED),
++            diff_stats: Some(LineDiffStats {
++                insertions: 1,
++                deletions: 0,
++            }),
++        });
++
++        assert_eq!(DisplayableTree::line_diff_stats_width(&tree.lines[1]), 5);
++    }
++
 +    fn test_tree_with_context_mark(
 +        context_mark: ContextGutterMark,
 +    ) -> Tree {
@@ -436,6 +485,70 @@ index aadee06..97d7918 100644
 +                    None,
 +                    Some(context_mark),
 +                ),
++            ],
++            next_line_id: 2,
++            selection: 0,
++            options: TreeOptions::default(),
++            scroll: 0,
++            total_search: false,
++            git_status: ComputationResult::None,
++            build_report: BuildReport::default(),
++        }
++    }
++
++    fn test_tree_with_git_status(
++        git_status: LineGitStatus,
++    ) -> Tree {
++        let tmp_dir = tempfile::tempdir().unwrap();
++        let root_path = tmp_dir.path().to_path_buf();
++        let child_path = root_path.join("tracked.txt");
++        fs::write(&child_path, "a\n").unwrap();
++
++        Tree {
++            lines: vec![
++                test_line(&root_path, 0, None, TreeLineType::Dir, None, None),
++                test_line(
++                    &child_path,
++                    1,
++                    Some(0),
++                    TreeLineType::File,
++                    Some(git_status),
++                    None,
++                ),
++            ],
++            next_line_id: 2,
++            selection: 0,
++            options: TreeOptions::default(),
++            scroll: 0,
++            total_search: false,
++            git_status: ComputationResult::None,
++            build_report: BuildReport::default(),
++        }
++    }
++
++    fn test_tree_with_hidden_git_status(
++        hidden_git_status: LineGitStatus,
++    ) -> Tree {
++        let tmp_dir = tempfile::tempdir().unwrap();
++        let root_path = tmp_dir.path().to_path_buf();
++        let child_path = root_path.join("tracked");
++        fs::create_dir_all(&child_path).unwrap();
++
++        let mut child_line = test_line(
++            &child_path,
++            1,
++            Some(0),
++            TreeLineType::Dir,
++            None,
++            None,
++        );
++        child_line.unlisted = 1;
++        child_line.unlisted_git_status = Some(hidden_git_status);
++
++        Tree {
++            lines: vec![
++                test_line(&root_path, 0, None, TreeLineType::Dir, None, None),
++                child_line,
 +            ],
 +            next_line_id: 2,
 +            selection: 0,

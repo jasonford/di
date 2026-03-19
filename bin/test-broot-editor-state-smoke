@@ -47,7 +47,7 @@ assert_no_trailing_stats() {
   local file_regex="$1"
 
   capture_pane
-  if printf '%s\n' "$last_capture" | grep -Eq "${file_regex}[[:space:]]+\\+[0-9]+-[0-9]+$"; then
+  if printf '%s\n' "$last_capture" | grep -Eq "${file_regex}[[:space:]]+\\+[0-9]+(-[0-9]+)?$"; then
     fail_with_capture "git stats still trailed ${file_regex}"
   fi
 }
@@ -174,7 +174,7 @@ fi
 if ! wait_for_regex 'folder$'; then
   fail_with_capture 'broot never rendered the tracked directory row'
 fi
-if ! wait_for_literal 'M+1-0 ├──alpha.txt'; then
+if ! wait_for_literal '+1-0 ├──alpha.txt'; then
   fail_with_capture 'git diff stats never moved into the alpha.txt gutter'
 fi
 assert_aligned_name_columns 'folder' 'alpha.txt'
@@ -182,12 +182,19 @@ assert_aligned_name_columns 'alpha.txt' 'beta.txt'
 assert_no_trailing_stats 'alpha\.txt'
 assert_no_trailing_stats 'beta\.txt'
 
+printf 'fresh\n' >"$repo_root/untracked.txt"
+if ! wait_for_regex '\+1[[:space:]]+[├└]──untracked\.txt$'; then
+  fail_with_capture 'new files should render insertion-only stats in the gutter'
+fi
+assert_aligned_name_columns 'alpha.txt' 'untracked.txt'
+assert_no_trailing_stats 'untracked\.txt'
+
 printf '0\t%s\n' "$repo_root/alpha.txt" >"$editor_state_file"
 sleep 0.2
 if ! wait_for_absent_regex '[=*].*alpha\.txt$'; then
   fail_with_capture 'clean editor state should no longer print a gutter marker'
 fi
-if ! wait_for_literal 'M+1-0 ├──alpha.txt'; then
+if ! wait_for_literal '+1-0 ├──alpha.txt'; then
   fail_with_capture 'clean editor state shifted the alpha.txt gutter layout'
 fi
 assert_aligned_name_columns 'folder' 'alpha.txt'
@@ -199,7 +206,7 @@ sleep 0.2
 if ! wait_for_absent_regex '[=*].*alpha\.txt$'; then
   fail_with_capture 'modified editor state should no longer print a gutter marker'
 fi
-if ! wait_for_literal 'M+1-0 ├─•alpha.txt'; then
+if ! wait_for_literal '+1-0 ├─•alpha.txt'; then
   fail_with_capture 'modified editor state did not replace the final branch segment with a dot'
 fi
 assert_aligned_name_columns 'folder' 'alpha.txt'
@@ -210,12 +217,30 @@ assert_no_trailing_stats 'alpha\.txt'
 if ! wait_for_absent_regex '[=*].*alpha\.txt$'; then
   fail_with_capture 'editor marker did not clear when the state file was emptied'
 fi
-if ! wait_for_literal 'M+1-0 ├──alpha.txt'; then
+if ! wait_for_literal '+1-0 ├──alpha.txt'; then
   fail_with_capture 'alpha.txt gutter did not return to git-only state'
 fi
 assert_aligned_name_columns 'folder' 'alpha.txt'
 assert_aligned_name_columns 'alpha.txt' 'beta.txt'
 assert_no_trailing_stats 'alpha\.txt'
+
+for idx in $(seq -w 1 30); do
+  printf 'filler\n' >"$repo_root/zz-root-$idx.txt"
+done
+
+if ! wait_for_regex 'folder …$'; then
+  fail_with_capture 'folder never rendered as a collapsed directory row'
+fi
+if ! wait_for_absent_regex 'nested\.txt$'; then
+  fail_with_capture 'folder never hid its nested child after the root filled up'
+fi
+
+printf 'nested\ndirty\n' >"$repo_root/folder/nested.txt"
+if ! wait_for_regex '\+1-0[[:space:]]+[├└]──folder …$'; then
+  fail_with_capture 'collapsed directory did not roll up git diff stats from hidden descendants'
+fi
+assert_aligned_name_columns 'alpha.txt' 'folder'
+assert_no_trailing_stats 'folder'
 
 for idx in $(seq -w 1 30); do
   mkdir -p "$repo_root/pruned-$idx"
