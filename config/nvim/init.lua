@@ -1,4 +1,6 @@
-vim.cmd("filetype plugin indent on")
-vim.cmd("syntax enable")
+pcall(vim.loader.enable)
 
-vim.opt.number = true
+vim.g.mapleader = " "
+vim.g.maplocalleader = " "
+
+require("config")

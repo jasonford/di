@@ -68,6 +68,9 @@ mkdir -p "$(dirname "$state_file")"
 rm -f "$socket_path"
 
 cd "$workspace_dir"
+if ! "$script_root/bin/codex-nvim-prewarm" "$session_name"; then
+  tmux display-message -d 5000 "Neovim plugin setup failed; see $runtime_dir/nvim-prewarm.log"
+fi
 nvim --listen "$socket_path" \
   --cmd "set hidden" \
   --cmd "lua dofile(vim.env.CODEX_NVIM_BOOTSTRAP)" \

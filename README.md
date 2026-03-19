@@ -23,6 +23,7 @@ chmod +x develop
 - Open files with plain `nvim` inside the container
 - Running `vim` in the container opens the same vanilla Neovim binary
 - The shared Neovim config lives at `config/nvim/init.lua` and is loaded by both plain `nvim` and the managed editor pane
+- The tmux launcher prewarms the managed Neovim plugins headlessly for each session so the first visible editor open does not show lazy.nvim's install UI
 - `broot` launches in the upper-right pane as a patched source build, starts in watch mode, and has git file status info enabled by default
 - The bundled `broot` patches make watch mode refresh recursively from the current root, keep broot's repo summary on the root row, and show git status plus `+/-` counts in a fixed gutter on changed files
 - The lower-right pane follows broot's current selection and shows unified git diffs for changed tracked text files, highlighted text previews for normal files, a real minimal Bash shell for directories, and safe fallbacks for binaries and large files

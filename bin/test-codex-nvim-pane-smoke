@@ -133,6 +133,10 @@ wait_for_editor_teardown() {
   return 1
 }
 
+headless_invocations() {
+  grep -c '^headless ' "$remote_log" 2>/dev/null || true
+}
+
 assert_equals() {
   local expected="$1"
   local actual="$2"
@@ -155,7 +159,10 @@ setup_nvim_wrapper() {
   cat >"$nvim_wrapper_dir/nvim" <<EOF
 #!/usr/bin/env bash
 set -euo pipefail
-if [ "\${1:-}" = "--server" ]; then
+if [ "\${1:-}" = "--headless" ]; then
+  printf 'headless args=%s\n' "\$*" >>"$remote_log"
+  exit 0
+elif [ "\${1:-}" = "--server" ]; then
   if [ -t 0 ]; then
     tty_stdin=1
   else
@@ -172,8 +179,18 @@ EOF
 
 launch_tmux() {
   mkdir -p "$repo_root"
+  mkdir -p "$repo_root/config/nvim/lua/config"
   printf 'one\n' >"$repo_root/one.txt"
   printf 'two\n' >"$repo_root/two.txt"
+  cat >"$repo_root/config/nvim/init.lua" <<'EOF'
+require("config")
+EOF
+  cat >"$repo_root/config/nvim/lua/config/init.lua" <<'EOF'
+require("config.lazy")
+EOF
+  cat >"$repo_root/config/nvim/lua/config/lazy.lua" <<'EOF'
+vim.g.codex_nvim_prewarm_smoke = true
+EOF
   : >"$selection_output"
   : >"$state_file"
   : >"$remote_log"
@@ -228,6 +245,13 @@ if ! wait_for_socket; then
   printf 'nvim socket never became ready\n' >&2
   exit 1
 fi
+if ! wait_for_regex_in_file "$remote_log" "^headless args=--headless .*\\+Lazy! install .*\\+qa$"; then
+  printf 'expected a headless Neovim prewarm before the visible editor startup\n' >&2
+  cat "$remote_log" >&2 || true
+  exit 1
+fi
+assert_equals "1" "$(headless_invocations)" 'prewarm should run exactly once before the first visible open'
+assert_equals "yes" "$(test -f "$tmp_dir/runtime/nvim-prewarm-ready" && echo yes || echo no)" 'prewarm did not leave a ready marker'
 if ! wait_for_active_pane "$editor_pane"; then
   printf 'focus never moved into the Neovim pane after startup\n' >&2
   exit 1
@@ -325,5 +349,17 @@ restored_left="$(( ($(window_width "$codex_pane") - 1) / 3 ))"
 assert_width "$restored_left" "$codex_pane" 'teardown did not restore the codex pane width'
 assert_width "$(( $(window_width "$codex_pane") - restored_left - 1 ))" "$broot_pane" 'teardown did not restore the broot pane width'
 assert_equals "$(pane_width "$broot_pane")" "$(pane_width "$preview_pane")" 'teardown did not preserve the preview width'
+
+TMUX_PANE="$broot_pane" "$SCRIPT_ROOT/bin/codex-open-in-vim" "$repo_root/one.txt"
+if ! wait_for_socket; then
+  printf 'nvim socket never became ready on the warm reopen\n' >&2
+  exit 1
+fi
+assert_equals "1" "$(headless_invocations)" 'warm reopen should reuse the ready marker instead of rerunning prewarm'
+nvim --server "$socket_path" --remote-send ':q<CR>'
+if ! wait_for_editor_teardown; then
+  printf 'editor pane never tore down after the warm reopen quit\n' >&2
+  exit 1
+fi
 
 printf 'codex nvim pane smoke test passed\n'

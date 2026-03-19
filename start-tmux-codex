@@ -118,6 +118,10 @@ if ! "${tmux_cmd[@]}" has-session -t "$SESSION_NAME" 2>/dev/null; then
   )
   printf -v preview_watch_shell '%q ' "${preview_watch_cmd[@]}"
   "${tmux_cmd[@]}" run-shell -b "$preview_watch_shell"
+  printf -v nvim_prewarm_shell 'bash %q %q >/dev/null 2>&1' \
+    "$SCRIPT_ROOT/bin/codex-nvim-prewarm" \
+    "$SESSION_NAME"
+  "${tmux_cmd[@]}" run-shell -b "$nvim_prewarm_shell"
   "$SCRIPT_ROOT/bin/codex-layout" two-column "$SESSION_NAME"
   "${tmux_cmd[@]}" select-pane -t "$codex_pane"
 fi
