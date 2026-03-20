@@ -20,13 +20,41 @@ pane_live() {
   [ "$(tmux display-message -p -t "$pane_id" '#{pane_dead}' 2>/dev/null || printf '1')" = "0" ]
 }
 
+read_selection_dir() {
+  local selection_output="$1"
+  local workspace_dir="$2"
+  local selected_path=""
+
+  [ -n "$selection_output" ] || return 0
+  [ -f "$selection_output" ] || return 0
+
+  IFS= read -r selected_path < "$selection_output" || true
+  [ -n "$selected_path" ] || return 0
+
+  if [[ "$selected_path" != /* ]]; then
+    selected_path="${workspace_dir:-.}/$selected_path"
+  fi
+
+  if [ -d "$selected_path" ]; then
+    printf '%s\n' "$selected_path"
+  fi
+}
+
 workspace_dir="$(tmux_option @broot_workspace_dir)"
+selection_output="$(tmux_option @broot_selection_output)"
 terminal_pane="$(tmux_option @codex_terminal_pane_id)"
+terminal_dir="$(tmux_option @codex_terminal_dir)"
+selected_dir="$(read_selection_dir "$selection_output" "$workspace_dir")"
 
 [ -n "$terminal_pane" ] || exit 0
 
+if [ -n "$selected_dir" ]; then
+  terminal_dir="$selected_dir"
+  tmux set-option -q -t "$session_name" @codex_terminal_dir "$terminal_dir" >/dev/null 2>&1 || true
+fi
+
 if ! pane_live "$terminal_pane"; then
-  tmux respawn-pane -k -t "$terminal_pane" -c "${workspace_dir:-.}" "$SCRIPT_ROOT/bin/codex-terminal-shell" >/dev/null 2>&1 || exit 0
+  tmux respawn-pane -k -t "$terminal_pane" -c "${terminal_dir:-${workspace_dir:-.}}" "$SCRIPT_ROOT/bin/codex-terminal-shell" >/dev/null 2>&1 || exit 0
 fi
 
 tmux select-pane -t "$terminal_pane" >/dev/null 2>&1 || true

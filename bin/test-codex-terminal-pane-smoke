@@ -5,9 +5,16 @@ SCRIPT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 TMUX_CONFIG="${TMUX_CONFIG:-$SCRIPT_ROOT/.tmux/tmux.conf}"
 TMUX_SESSION_NAME="codex-terminal-pane-smoke"
 tmux_cmd=(tmux -u -f "$TMUX_CONFIG")
+tmp_dir="$(mktemp -d /tmp/codex-terminal-pane.XXXXXX)"
+selection_output="$tmp_dir/selection.txt"
+watcher_pid=""
 
 cleanup() {
+  if [ -n "$watcher_pid" ]; then
+    kill "$watcher_pid" >/dev/null 2>&1 || true
+  fi
   "${tmux_cmd[@]}" kill-session -t "$TMUX_SESSION_NAME" >/dev/null 2>&1 || true
+  rm -rf "$tmp_dir"
 }
 trap cleanup EXIT
 
@@ -43,6 +50,10 @@ pane_left() {
 
 pane_dead() {
   "${tmux_cmd[@]}" display-message -p -t "$1" '#{pane_dead}'
+}
+
+pane_current_path() {
+  "${tmux_cmd[@]}" display-message -p -t "$1" '#{pane_current_path}'
 }
 
 window_width() {
@@ -86,6 +97,39 @@ wait_for_prompt() {
   printf '%s' "$capture" | grep -Fq "$expected"
 }
 
+wait_for_path() {
+  local pane_id="$1"
+  local expected="$2"
+  local deadline=$((SECONDS + 5))
+
+  while (( SECONDS < deadline )); do
+    if [ "$(pane_current_path "$pane_id")" = "$expected" ]; then
+      return 0
+    fi
+    sleep 0.1
+  done
+
+  [ "$(pane_current_path "$pane_id")" = "$expected" ]
+}
+
+wait_for_capture_text() {
+  local pane_id="$1"
+  local expected="$2"
+  local deadline=$((SECONDS + 5))
+  local capture
+
+  while (( SECONDS < deadline )); do
+    capture="$(capture_pane "$pane_id")"
+    if printf '%s' "$capture" | grep -Fq "$expected"; then
+      return 0
+    fi
+    sleep 0.1
+  done
+
+  capture="$(capture_pane "$pane_id")"
+  printf '%s' "$capture" | grep -Fq "$expected"
+}
+
 require_command tmux
 
 "${tmux_cmd[@]}" new-session -d -s "$TMUX_SESSION_NAME" -x 160 -y 24
@@ -95,12 +139,18 @@ broot_pane="$("${tmux_cmd[@]}" split-window -d -h -b -P -F '#{pane_id}' -t "$win
 terminal_pane="$("${tmux_cmd[@]}" split-window -d -h -b -P -F '#{pane_id}' -t "$codex_pane" -c "$SCRIPT_ROOT" "$SCRIPT_ROOT/bin/codex-terminal-shell")"
 
 "${tmux_cmd[@]}" set-option -t "$TMUX_SESSION_NAME" remain-on-exit on
+"${tmux_cmd[@]}" set-option -t "$TMUX_SESSION_NAME" @broot_runtime_dir "$tmp_dir"
 "${tmux_cmd[@]}" set-option -t "$TMUX_SESSION_NAME" @broot_workspace_dir "$SCRIPT_ROOT"
+"${tmux_cmd[@]}" set-option -t "$TMUX_SESSION_NAME" @broot_selection_output "$selection_output"
 "${tmux_cmd[@]}" set-option -t "$TMUX_SESSION_NAME" @codex_pane_id "$codex_pane"
 "${tmux_cmd[@]}" set-option -t "$TMUX_SESSION_NAME" @broot_pane_id "$broot_pane"
 "${tmux_cmd[@]}" set-option -t "$TMUX_SESSION_NAME" @codex_terminal_pane_id "$terminal_pane"
+"${tmux_cmd[@]}" set-option -t "$TMUX_SESSION_NAME" @codex_terminal_dir "$SCRIPT_ROOT"
 
 "$SCRIPT_ROOT/bin/codex-layout" three-column "$TMUX_SESSION_NAME"
+: >"$selection_output"
+"$SCRIPT_ROOT/bin/codex-watch-broot-selection" "$TMUX_SESSION_NAME" &
+watcher_pid="$!"
 
 if ! wait_for_prompt "$terminal_pane" "$SCRIPT_ROOT >"; then
   printf 'terminal shell did not use the simplified prompt\n' >&2
@@ -142,6 +192,48 @@ fi
 assert_equals "$terminal_pane" "$(active_pane)" 'terminal focus hook did not select the respawned terminal pane'
 if ! wait_for_prompt "$terminal_pane" "$SCRIPT_ROOT >"; then
   printf 'respawned terminal shell did not use the simplified prompt\n' >&2
+  capture_pane "$terminal_pane" >&2
+  exit 1
+fi
+
+sync_dir="$tmp_dir/dir with spaces"
+sync_file="$sync_dir/note.txt"
+mkdir -p "$sync_dir"
+printf 'note\n' >"$sync_file"
+printf '%s\n' "$sync_dir" >"$selection_output"
+
+if ! wait_for_path "$terminal_pane" "$sync_dir"; then
+  printf 'directory selection did not sync the middle terminal pane path\n' >&2
+  capture_pane "$terminal_pane" >&2
+  exit 1
+fi
+
+printf -v expected_cd 'cd -- %q' "$sync_dir"
+if ! wait_for_capture_text "$terminal_pane" "$expected_cd"; then
+  printf 'directory selection did not send a visible cd command into the middle terminal pane\n' >&2
+  capture_pane "$terminal_pane" >&2
+  exit 1
+fi
+
+printf '%s\n' "$sync_file" >"$selection_output"
+sleep 0.3
+assert_equals "$sync_dir" "$(pane_current_path "$terminal_pane")" 'file selection should not change the middle terminal pane path'
+
+"${tmux_cmd[@]}" send-keys -t "$terminal_pane" "exit" C-m
+if ! wait_for_dead_state "$terminal_pane" 1; then
+  printf 'terminal pane never exited for synced-dir respawn verification\n' >&2
+  exit 1
+fi
+
+"${tmux_cmd[@]}" select-pane -t "$broot_pane"
+TMUX_PANE="$broot_pane" "$SCRIPT_ROOT/bin/codex-focus-terminal"
+if ! wait_for_dead_state "$terminal_pane" 0; then
+  printf 'terminal focus hook did not respawn the terminal pane in the synced directory\n' >&2
+  exit 1
+fi
+assert_equals "$terminal_pane" "$(active_pane)" 'terminal focus hook did not select the synced-dir respawned pane'
+if ! wait_for_path "$terminal_pane" "$sync_dir"; then
+  printf 'respawned terminal shell did not restore the last synced directory\n' >&2
   capture_pane "$terminal_pane" >&2
   exit 1
 fi

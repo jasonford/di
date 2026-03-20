@@ -1,0 +1,131 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+POLL_INTERVAL="${CODEX_BROOT_SELECTION_POLL_INTERVAL:-0.1}"
+
+if [ "$#" -gt 1 ]; then
+  printf 'usage: codex-watch-broot-selection [tmux-session-name]\n' >&2
+  exit 1
+fi
+
+session_name="${1:-}"
+if [ -z "$session_name" ]; then
+  if [ -z "${TMUX_PANE:-}" ]; then
+    printf 'codex-watch-broot-selection needs a tmux session name or TMUX_PANE\n' >&2
+    exit 1
+  fi
+  session_name="$(tmux display-message -p -t "$TMUX_PANE" '#S')"
+fi
+
+tmux_option() {
+  tmux show-options -qv -t "$session_name" "$1" 2>/dev/null || true
+}
+
+pane_format() {
+  tmux display-message -p -t "$1" "$2" 2>/dev/null || true
+}
+
+pane_live() {
+  local pane_id="$1"
+  [ -n "$pane_id" ] || return 1
+  [ "$(pane_format "$pane_id" '#{pane_dead}')" = "0" ]
+}
+
+normalize_path() {
+  local path="$1"
+  [ -n "$path" ] || return 0
+  realpath -m -- "$path" 2>/dev/null || printf '%s\n' "$path"
+}
+
+is_shell_command() {
+  case "$1" in
+    bash|sh|zsh|fish)
+      return 0
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+}
+
+read_selection() {
+  local raw=""
+  if [ -f "$selection_output" ]; then
+    IFS= read -r raw < "$selection_output" || true
+  fi
+  if [ -z "$raw" ]; then
+    printf '\n'
+    return 0
+  fi
+  if [[ "$raw" != /* ]]; then
+    raw="${workspace_dir:-.}/$raw"
+  fi
+  normalize_path "$raw"
+}
+
+sync_terminal_pane() {
+  local terminal_pane="$1"
+  local target_dir="$2"
+  local current_command=""
+  local current_path=""
+  local cd_command=""
+
+  if ! pane_live "$terminal_pane"; then
+    return 1
+  fi
+
+  current_command="$(pane_format "$terminal_pane" '#{pane_current_command}')"
+  if ! is_shell_command "$current_command"; then
+    return 1
+  fi
+
+  current_path="$(pane_format "$terminal_pane" '#{pane_current_path}')"
+  current_path="$(normalize_path "$current_path")"
+  if [ "$current_path" = "$target_dir" ]; then
+    return 0
+  fi
+
+  printf -v cd_command 'cd -- %q' "$target_dir"
+  tmux send-keys -t "$terminal_pane" C-u "$cd_command" C-m >/dev/null 2>&1 || return 1
+  return 0
+}
+
+selection_output="$(tmux_option @broot_selection_output)"
+workspace_dir="$(tmux_option @broot_workspace_dir)"
+runtime_dir="$(tmux_option @broot_runtime_dir)"
+
+[ -n "$selection_output" ] || exit 0
+
+lock_root="${runtime_dir:-$(dirname -- "$selection_output")}"
+mkdir -p "$lock_root"
+exec 9>"$lock_root/terminal-dir-sync.lock"
+flock -n 9 || exit 0
+
+selected_dir=""
+applied_dir=""
+
+while tmux has-session -t "$session_name" 2>/dev/null; do
+  next_dir=""
+  selection_path="$(read_selection)"
+
+  if [ -n "$selection_path" ] && [ -d "$selection_path" ]; then
+    next_dir="$(normalize_path "$selection_path")"
+  fi
+
+  if [ "$next_dir" != "$selected_dir" ]; then
+    selected_dir="$next_dir"
+    applied_dir=""
+    if [ -n "$selected_dir" ]; then
+      tmux set-option -q -t "$session_name" @codex_terminal_dir "$selected_dir" >/dev/null 2>&1 || true
+    fi
+  fi
+
+  if [ -n "$selected_dir" ] && [ "$applied_dir" != "$selected_dir" ]; then
+    terminal_pane="$(tmux_option @codex_terminal_pane_id)"
+    if sync_terminal_pane "$terminal_pane" "$selected_dir"; then
+      applied_dir="$selected_dir"
+    fi
+  fi
+
+  sleep "$POLL_INTERVAL"
+done

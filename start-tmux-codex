@@ -76,6 +76,7 @@ if ! "${tmux_cmd[@]}" has-session -t "$SESSION_NAME" 2>/dev/null; then
   "${tmux_cmd[@]}" set-option -t "$SESSION_NAME" @broot_pane_id "$broot_pane"
   terminal_pane="$("${tmux_cmd[@]}" split-window -h -b -P -F '#{pane_id}' -t "$codex_pane" -c "$WORKDIR" "${terminal_cmd[@]}")"
   "${tmux_cmd[@]}" set-option -t "$SESSION_NAME" @codex_terminal_pane_id "$terminal_pane"
+  "${tmux_cmd[@]}" set-option -t "$SESSION_NAME" @codex_terminal_dir "$WORKDIR"
   "$SCRIPT_ROOT/bin/codex-layout" three-column "$SESSION_NAME"
   "${tmux_cmd[@]}" select-pane -t "$codex_pane"
 fi
@@ -84,6 +85,8 @@ printf -v layout_hook_cmd '%q %q %q' "$SCRIPT_ROOT/bin/codex-layout" "three-colu
 "${tmux_cmd[@]}" set-hook -t "$SESSION_NAME" client-attached "run-shell \"$layout_hook_cmd\""
 "${tmux_cmd[@]}" set-hook -t "$SESSION_NAME" client-resized "run-shell \"$layout_hook_cmd\""
 "$SCRIPT_ROOT/bin/codex-layout" three-column "$SESSION_NAME" >/dev/null 2>&1 || true
+printf -v selection_watch_cmd '%q %q' "$SCRIPT_ROOT/bin/codex-watch-broot-selection" "$SESSION_NAME"
+"${tmux_cmd[@]}" run-shell -b "$selection_watch_cmd"
 
 "${tmux_cmd[@]}" source-file "$TMUX_CONFIG"
 exec "${tmux_cmd[@]}" attach-session -t "$SESSION_NAME"
