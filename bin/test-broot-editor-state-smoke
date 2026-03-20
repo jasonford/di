@@ -175,7 +175,7 @@ fi
 if ! wait_for_regex 'folder$'; then
   fail_with_capture 'broot never rendered the tracked directory row'
 fi
-if ! wait_for_literal '+1-0 ├──alpha.txt'; then
+if ! wait_for_literal '+1-0├──alpha.txt'; then
   fail_with_capture 'git diff stats never moved into the alpha.txt gutter'
 fi
 assert_aligned_name_columns 'folder' 'alpha.txt'
@@ -214,7 +214,7 @@ sleep 0.2
 if ! wait_for_absent_regex '[=*].*alpha\.txt$'; then
   fail_with_capture 'clean editor state should no longer print a gutter marker'
 fi
-if ! wait_for_literal '+1-0 ├──alpha.txt'; then
+if ! wait_for_literal '+1-0├──alpha.txt'; then
   fail_with_capture 'clean editor state shifted the alpha.txt gutter layout'
 fi
 assert_aligned_name_columns 'folder' 'alpha.txt'
@@ -226,8 +226,8 @@ sleep 0.2
 if ! wait_for_absent_regex '[=*].*alpha\.txt$'; then
   fail_with_capture 'modified editor state should no longer print a gutter marker'
 fi
-if ! wait_for_literal '+1-0 ├─•alpha.txt'; then
-  fail_with_capture 'modified editor state did not replace the final branch segment with a dot'
+if ! wait_for_literal '+1-0├─•alpha.txt'; then
+  fail_with_capture 'modified editor state did not replace the final branch segment with a bullet'
 fi
 assert_aligned_name_columns 'folder' 'alpha.txt'
 assert_aligned_name_columns 'alpha.txt' 'beta.txt'
@@ -237,7 +237,7 @@ assert_no_trailing_stats 'alpha\.txt'
 if ! wait_for_absent_regex '[=*].*alpha\.txt$'; then
   fail_with_capture 'editor marker did not clear when the state file was emptied'
 fi
-if ! wait_for_literal '+1-0 ├──alpha.txt'; then
+if ! wait_for_literal '+1-0├──alpha.txt'; then
   fail_with_capture 'alpha.txt gutter did not return to git-only state'
 fi
 assert_aligned_name_columns 'folder' 'alpha.txt'

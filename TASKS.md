@@ -1,6 +1,7 @@
-- if an unlisted row shows stats, no need to show stats on
-  parent dir.
-
 - don't show tabs in neovim
 
-- update unsaved edit dot in broot to bullet.
+- update unsaved edit marker in broot to a yellow bullet.
+
+- remove preview panel and all complicating code. Instead, have the right panel show files opned in neovim.
+
+- have neovim default to horizontal scroll and no line wrapping
