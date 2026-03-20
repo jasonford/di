@@ -146,7 +146,7 @@ extract_stats() {
 choose_probe_file() {
   local candidates=(
     'bin/test-broot-confined-root-smoke'
-    'bin/broot-preview-pane'
+    'bin/test-codex-nvim-pane-smoke'
     'bin/test-broot-live-update-smoke'
   )
   local visible_bin_candidates=()

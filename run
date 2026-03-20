@@ -78,8 +78,6 @@ exec docker run --rm -it \
   -e VISUAL=nvim \
   -e EDITOR=nvim \
   -e TERM="${TERM:-xterm-256color}" \
-  -e BROOT_PREVIEW_PANE_PERCENT="${BROOT_PREVIEW_PANE_PERCENT:-35}" \
-  -e BROOT_PREVIEW_DIFF_MODE="${BROOT_PREVIEW_DIFF_MODE:-auto}" \
   -e MODEL="$MODEL" \
   -e CODEX_NO_ALT_SCREEN="$CODEX_NO_ALT_SCREEN" \
   -e CODEX_REPO_NAME="$REPO_NAME" \

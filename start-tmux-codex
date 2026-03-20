@@ -13,20 +13,7 @@ REPO_NAME="${CODEX_REPO_NAME:-$default_repo_name}"
 SESSION_NAME="${CODEX_TMUX_SESSION:-dint-$REPO_NAME}"
 MODEL="${MODEL:-gpt-5.4}"
 TMUX_CONFIG="${TMUX_CONFIG:-$SCRIPT_ROOT/.tmux/tmux.conf}"
-BROOT_PREVIEW_PANE_PERCENT="${BROOT_PREVIEW_PANE_PERCENT:-35}"
-BROOT_PREVIEW_DIFF_MODE="${BROOT_PREVIEW_DIFF_MODE:-auto}"
 CODEX_NO_ALT_SCREEN="${CODEX_NO_ALT_SCREEN:-1}"
-
-if ! [[ "$BROOT_PREVIEW_PANE_PERCENT" =~ ^[0-9]+$ ]] || [ "$BROOT_PREVIEW_PANE_PERCENT" -le 0 ] || [ "$BROOT_PREVIEW_PANE_PERCENT" -ge 100 ]; then
-  BROOT_PREVIEW_PANE_PERCENT=35
-fi
-
-case "$BROOT_PREVIEW_DIFF_MODE" in
-  auto|unstaged|staged) ;;
-  *)
-    BROOT_PREVIEW_DIFF_MODE=auto
-    ;;
-esac
 
 session_slug="$(printf '%s' "$SESSION_NAME" | tr -c 'A-Za-z0-9._-' '_')"
 runtime_dir="/tmp/codex-broot-$session_slug"
@@ -65,22 +52,6 @@ broot_cmd=(
   --cmd ":toggle_watch"
 )
 
-preview_env=()
-for preview_var in \
-  BROOT_PREVIEW_POLL_INTERVAL \
-  BROOT_PREVIEW_MAX_TEXT_LINES \
-  BROOT_PREVIEW_MAX_DIFF_LINES \
-  BROOT_PREVIEW_MAX_LIST_LINES \
-  BROOT_PREVIEW_MAX_HEX_LINES \
-  BROOT_PREVIEW_MAX_GIT_STATUS_LINES \
-  BROOT_PREVIEW_HUGE_FILE_BYTES \
-  BROOT_PREVIEW_MAX_HEX_BYTES
-do
-  if [ -n "${!preview_var+x}" ]; then
-    preview_env+=("${preview_var}=${!preview_var}")
-  fi
-done
-
 if ! "${tmux_cmd[@]}" has-session -t "$SESSION_NAME" 2>/dev/null; then
   mkdir -p "$runtime_dir"
   mkdir -p "$runtime_dir/home" "$runtime_dir/xdg-config"
@@ -95,7 +66,6 @@ if ! "${tmux_cmd[@]}" has-session -t "$SESSION_NAME" 2>/dev/null; then
   "${tmux_cmd[@]}" set-option -t "$SESSION_NAME" remain-on-exit on
   "${tmux_cmd[@]}" set-option -t "$SESSION_NAME" @broot_runtime_dir "$runtime_dir"
   "${tmux_cmd[@]}" set-option -t "$SESSION_NAME" @broot_workspace_dir "$WORKDIR"
-  "${tmux_cmd[@]}" set-option -t "$SESSION_NAME" @broot_preview_diff_mode "$BROOT_PREVIEW_DIFF_MODE"
   "${tmux_cmd[@]}" set-option -t "$SESSION_NAME" @broot_selection_output "$selection_output"
   "${tmux_cmd[@]}" set-option -t "$SESSION_NAME" @codex_repo_name "$REPO_NAME"
   "${tmux_cmd[@]}" set-option -t "$SESSION_NAME" @codex_window_id "$window_id"
@@ -103,21 +73,7 @@ if ! "${tmux_cmd[@]}" has-session -t "$SESSION_NAME" 2>/dev/null; then
   "${tmux_cmd[@]}" set-option -t "$SESSION_NAME" @codex_nvim_socket "$editor_socket"
   "${tmux_cmd[@]}" set-option -t "$SESSION_NAME" @codex_nvim_state_file "$editor_state_file"
   broot_pane="$("${tmux_cmd[@]}" split-window -h -P -F '#{pane_id}' -t "$window_id" -c "$WORKDIR" "${broot_cmd[@]}")"
-  preview_pane="$("${tmux_cmd[@]}" split-window -v -P -F '#{pane_id}' -p "$BROOT_PREVIEW_PANE_PERCENT" -t "$broot_pane" -c "$WORKDIR" 'tail -f /dev/null')"
   "${tmux_cmd[@]}" set-option -t "$SESSION_NAME" @broot_pane_id "$broot_pane"
-  "${tmux_cmd[@]}" set-option -t "$SESSION_NAME" @broot_preview_pane_id "$preview_pane"
-  preview_watch_cmd=(
-    env
-    "${preview_env[@]}"
-    bash
-    "$SCRIPT_ROOT/bin/broot-preview-pane"
-    --watch-selection "$selection_output"
-    --target-pane "$preview_pane"
-    --base-dir "$WORKDIR"
-    --diff-mode "$BROOT_PREVIEW_DIFF_MODE"
-  )
-  printf -v preview_watch_shell '%q ' "${preview_watch_cmd[@]}"
-  "${tmux_cmd[@]}" run-shell -b "$preview_watch_shell"
   printf -v nvim_prewarm_shell 'bash %q %q >/dev/null 2>&1' \
     "$SCRIPT_ROOT/bin/codex-nvim-prewarm" \
     "$SESSION_NAME"
