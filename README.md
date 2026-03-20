@@ -26,8 +26,8 @@ chmod +x run
 - The first Neovim launch in a fresh data directory bootstraps the pinned plugins automatically with `lazy.nvim`
 - `broot` launches in the upper-left pane as a patched source build, starts in watch mode, and has git file status info enabled by default
 - The bundled `broot` patches make watch mode refresh recursively from the current root, keep broot's repo summary on the root row, and show inline `+/-` counts in a fixed gutter on changed files
-- Selecting a directory or file in broot syncs the middle tmux shell into that directory or the file's parent directory by sending a visible relative `cd` command to the pane
-- Press `Enter` or double-click a text file in broot to open it in the middle pane by sending a visible relative `nvim ./path` command; if that pane is already inside Neovim, broot falls back to `:drop` with the selected relative path
+- Selecting a directory in broot syncs the middle tmux shell into that directory with a visible relative `cd` command; selecting a file syncs to its parent directory and prefills a visible relative `nvim ./path` command without running it yet
+- Press `Enter` or double-click a text file in broot to submit that pending `nvim ./path` command in the middle pane; if that pane is already inside Neovim, broot falls back to `:drop` with the selected relative path
 - File selection still writes to the shared selection-output file, and broot still receives the shared editor-state file for the existing gutter integration
 - `broot` is launched directly with `--confine-root`, so browsing stays pinned to the mounted repo without `proot`
 

@@ -41,6 +41,18 @@ pane_path() {
   normalize_path "$current_path"
 }
 
+pane_contains_text() {
+  local pane_id="$1"
+  local expected="$2"
+  local capture=""
+
+  [ -n "$pane_id" ] || return 1
+  [ -n "$expected" ] || return 1
+
+  capture="$(tmux capture-pane -p -t "$pane_id" -S -1 2>/dev/null || true)"
+  printf '%s' "$capture" | grep -Fq "$expected"
+}
+
 is_shell_command() {
   case "$1" in
     bash|sh|zsh|fish)
@@ -124,18 +136,33 @@ relative_open_path() {
   printf '%s\n' "$relative_path"
 }
 
+build_open_command() {
+  local current_dir="$1"
+  local target_path="$2"
+  local relative_path=""
+  local open_command=""
+
+  relative_path="$(relative_open_path "$current_dir" "$target_path")"
+  printf -v open_command 'nvim %q' "$relative_path"
+  printf '%s\n' "$open_command"
+}
+
 send_shell_open_command() {
   local pane_id="$1"
   local selected_path="$2"
   local current_path=""
-  local relative_path=""
   local open_command=""
 
   current_path="$(pane_path "$pane_id")"
-  relative_path="$(relative_open_path "$current_path" "$selected_path")"
-  printf -v open_command 'nvim %q' "$relative_path"
+  open_command="$(build_open_command "$current_path" "$selected_path")"
 
   tmux send-keys -t "$pane_id" C-u "$open_command" C-m >/dev/null 2>&1
+}
+
+submit_prefilled_open_command() {
+  local pane_id="$1"
+
+  tmux send-keys -t "$pane_id" C-m >/dev/null 2>&1
 }
 
 send_vim_drop_keys() {
@@ -194,9 +221,12 @@ workspace_dir="$(tmux_option @broot_workspace_dir)"
 selection_output="$(tmux_option @broot_selection_output)"
 terminal_pane="$(tmux_option @codex_terminal_pane_id)"
 terminal_dir="$(tmux_option @codex_terminal_dir)"
+prefilled_selection="$(tmux_option @codex_terminal_prefilled_selection)"
+prefilled_command="$(tmux_option @codex_terminal_prefilled_command)"
 selection_path="$(read_selection_path "$selection_output" "$workspace_dir")"
 selected_dir="$(selection_target_dir "$selection_path")"
 current_command=""
+expected_open_command=""
 
 [ -n "$terminal_pane" ] || exit 0
 
@@ -212,9 +242,14 @@ fi
 current_command="$(pane_command "$terminal_pane")"
 
 if [ -n "$selection_path" ] && [ -f "$selection_path" ]; then
+  expected_open_command="$(build_open_command "${selected_dir:-$(pane_path "$terminal_pane")}" "$selection_path")"
   if is_shell_command "$current_command" || wait_for_shell "$terminal_pane"; then
     wait_for_path_sync "$terminal_pane" "$selected_dir" || true
-    send_shell_open_command "$terminal_pane" "$selection_path" || true
+    if [ "$prefilled_selection" = "$selection_path" ] && [ -n "$prefilled_command" ] && [ "$prefilled_command" = "$expected_open_command" ] && pane_contains_text "$terminal_pane" "$prefilled_command"; then
+      submit_prefilled_open_command "$terminal_pane" || true
+    else
+      send_shell_open_command "$terminal_pane" "$selection_path" || true
+    fi
   elif is_vim_command "$current_command"; then
     send_vim_drop_keys "$terminal_pane" "$selection_path" || true
   fi

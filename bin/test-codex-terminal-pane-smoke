@@ -297,6 +297,16 @@ if ! wait_for_capture_text "$terminal_pane" "$expected_file_cd"; then
 fi
 
 printf '%s\n' "$sync_file" >"$selection_output"
+if ! wait_for_command "$terminal_pane" "bash"; then
+  printf 'file selection should keep the middle pane in the shell until activation\n' >&2
+  capture_pane "$terminal_pane" >&2
+  exit 1
+fi
+if ! wait_for_capture_text "$terminal_pane" 'nvim ./note.txt'; then
+  printf 'file selection did not prefill a visible relative nvim command in the middle pane\n' >&2
+  capture_pane "$terminal_pane" >&2
+  exit 1
+fi
 "${tmux_cmd[@]}" select-pane -t "$broot_pane"
 TMUX_PANE="$broot_pane" "$SCRIPT_ROOT/bin/codex-focus-terminal"
 if ! wait_for_command "$terminal_pane" "nvim"; then

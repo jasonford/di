@@ -31,6 +31,16 @@ pane_live() {
   [ "$(pane_format "$pane_id" '#{pane_dead}')" = "0" ]
 }
 
+clear_prefill_options() {
+  tmux set-option -q -t "$session_name" @codex_terminal_prefilled_selection "" >/dev/null 2>&1 || true
+  tmux set-option -q -t "$session_name" @codex_terminal_prefilled_command "" >/dev/null 2>&1 || true
+}
+
+set_prefill_options() {
+  tmux set-option -q -t "$session_name" @codex_terminal_prefilled_selection "$1" >/dev/null 2>&1 || true
+  tmux set-option -q -t "$session_name" @codex_terminal_prefilled_command "$2" >/dev/null 2>&1 || true
+}
+
 normalize_path() {
   local path="$1"
   [ -n "$path" ] || return 0
@@ -100,6 +110,51 @@ selection_target_dir() {
   fi
 }
 
+selection_open_file() {
+  local selection_path="$1"
+
+  [ -n "$selection_path" ] || return 0
+
+  if [ -f "$selection_path" ]; then
+    printf '%s\n' "$selection_path"
+  fi
+}
+
+relative_open_path() {
+  local current_dir="$1"
+  local target_path="$2"
+  local relative_path=""
+
+  if [ -n "$current_dir" ] && [ -n "$target_path" ]; then
+    relative_path="$(realpath --relative-to="$current_dir" -- "$target_path" 2>/dev/null || true)"
+  fi
+
+  if [ -z "$relative_path" ]; then
+    relative_path="$target_path"
+  fi
+
+  case "$relative_path" in
+    ./*|../*|/*)
+      ;;
+    *)
+      relative_path="./$relative_path"
+      ;;
+  esac
+
+  printf '%s\n' "$relative_path"
+}
+
+build_open_command() {
+  local current_dir="$1"
+  local target_path="$2"
+  local relative_path=""
+  local open_command=""
+
+  relative_path="$(relative_open_path "$current_dir" "$target_path")"
+  printf -v open_command 'nvim %q' "$relative_path"
+  printf '%s\n' "$open_command"
+}
+
 sync_terminal_pane() {
   local terminal_pane="$1"
   local target_dir="$2"
@@ -129,6 +184,44 @@ sync_terminal_pane() {
   return 0
 }
 
+prefill_terminal_open_command() {
+  local terminal_pane="$1"
+  local target_dir="$2"
+  local selected_path="$3"
+  local current_command=""
+  local open_command=""
+
+  if ! pane_live "$terminal_pane"; then
+    return 1
+  fi
+
+  current_command="$(pane_format "$terminal_pane" '#{pane_current_command}')"
+  if ! is_shell_command "$current_command"; then
+    return 1
+  fi
+
+  open_command="$(build_open_command "$target_dir" "$selected_path")"
+  tmux send-keys -t "$terminal_pane" C-u "$open_command" >/dev/null 2>&1 || return 1
+  printf '%s\n' "$open_command"
+}
+
+clear_terminal_prefill() {
+  local terminal_pane="$1"
+  local current_command=""
+
+  if ! pane_live "$terminal_pane"; then
+    return 1
+  fi
+
+  current_command="$(pane_format "$terminal_pane" '#{pane_current_command}')"
+  if ! is_shell_command "$current_command"; then
+    return 1
+  fi
+
+  tmux send-keys -t "$terminal_pane" C-u >/dev/null 2>&1 || return 1
+  return 0
+}
+
 selection_output="$(tmux_option @broot_selection_output)"
 workspace_dir="$(tmux_option @broot_workspace_dir)"
 runtime_dir="$(tmux_option @broot_runtime_dir)"
@@ -141,26 +234,64 @@ exec 9>"$lock_root/terminal-dir-sync.lock"
 flock -n 9 || exit 0
 
 selected_dir=""
+selected_file=""
 applied_dir=""
+applied_open_command=""
+
+clear_prefill_options
 
 while tmux has-session -t "$session_name" 2>/dev/null; do
   next_dir=""
+  next_file=""
+  desired_open_command=""
   selection_path="$(read_selection)"
 
   next_dir="$(selection_target_dir "$selection_path")"
+  next_file="$(selection_open_file "$selection_path")"
+  if [ -n "$next_dir" ] && [ -n "$next_file" ]; then
+    desired_open_command="$(build_open_command "$next_dir" "$next_file")"
+  fi
 
-  if [ "$next_dir" != "$selected_dir" ]; then
+  if [ "$next_dir" != "$selected_dir" ] || [ "$next_file" != "$selected_file" ]; then
     selected_dir="$next_dir"
+    selected_file="$next_file"
     applied_dir=""
+    clear_prefill_options
     if [ -n "$selected_dir" ]; then
       tmux set-option -q -t "$session_name" @codex_terminal_dir "$selected_dir" >/dev/null 2>&1 || true
     fi
   fi
 
+  terminal_pane="$(tmux_option @codex_terminal_pane_id)"
+
+  if [ -n "$applied_open_command" ]; then
+    if ! pane_live "$terminal_pane" || ! is_shell_command "$(pane_format "$terminal_pane" '#{pane_current_command}')"; then
+      applied_open_command=""
+      clear_prefill_options
+    fi
+  fi
+
   if [ -n "$selected_dir" ] && [ "$applied_dir" != "$selected_dir" ]; then
-    terminal_pane="$(tmux_option @codex_terminal_pane_id)"
     if sync_terminal_pane "$terminal_pane" "$selected_dir"; then
       applied_dir="$selected_dir"
+      applied_open_command=""
+      clear_prefill_options
+    fi
+  fi
+
+  if [ -z "$selected_dir" ]; then
+    applied_dir=""
+  fi
+
+  if [ -n "$desired_open_command" ] && [ "$applied_dir" = "$selected_dir" ] && [ "$applied_open_command" != "$desired_open_command" ]; then
+    applied_open_command="$(prefill_terminal_open_command "$terminal_pane" "$selected_dir" "$selected_file" || true)"
+    if [ -n "$applied_open_command" ]; then
+      set_prefill_options "$selected_file" "$applied_open_command"
+    fi
+  elif [ -z "$desired_open_command" ] && [ -n "$applied_open_command" ]; then
+    if clear_terminal_prefill "$terminal_pane"; then
+      applied_open_command=""
+      clear_prefill_options
     fi
   fi
 
