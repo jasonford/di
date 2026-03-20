@@ -27,6 +27,7 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry,sharing=locked \
   && git apply /tmp/patches/broot-editor-pane-integration.patch \
   && git apply /tmp/patches/broot-context-gutter.patch \
   && git apply /tmp/patches/broot-git-context-gutter-layout.patch \
+  && git apply /tmp/patches/broot-pruning-parent-selection.patch \
   && cargo build --release --locked \
   && install -D /src/broot/target/release/broot /tmp/broot-bin/broot
 

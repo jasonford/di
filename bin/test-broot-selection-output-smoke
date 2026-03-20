@@ -17,6 +17,7 @@ home_dir="$tmp_dir/home"
 xdg_config_home="$tmp_dir/xdg-config"
 selection_output="$tmp_dir/selection.txt"
 last_capture=""
+selection_marker=$'\u25b6'
 
 cleanup() {
   "${tmux_cmd[@]}" kill-session -t "$TMUX_SESSION_NAME" >/dev/null 2>&1 || true
@@ -59,6 +60,42 @@ get_root() {
 
 send_key() {
   "${tmux_cmd[@]}" send-keys -t "$TMUX_SESSION_NAME:0.0" "$1"
+}
+
+wait_for_regex() {
+  local expected_regex="$1"
+  local deadline=$((SECONDS + TIMEOUT_SECONDS))
+
+  while (( SECONDS < deadline )); do
+    capture_pane
+    if printf '%s\n' "$last_capture" | grep -Eq "$expected_regex"; then
+      return 0
+    fi
+    if [[ "$(pane_dead)" == "1" ]]; then
+      return 1
+    fi
+    sleep "$POLL_INTERVAL"
+  done
+
+  capture_pane
+  printf '%s\n' "$last_capture" | grep -Eq "$expected_regex"
+}
+
+select_pruning_row() {
+  local deadline=$((SECONDS + TIMEOUT_SECONDS))
+  local selected_pruning_regex="^${selection_marker}.*[0-9]+ unlisted$"
+
+  while (( SECONDS < deadline )); do
+    capture_pane
+    if printf '%s\n' "$last_capture" | grep -Eq "$selected_pruning_regex"; then
+      return 0
+    fi
+    send_key Down
+    sleep "$POLL_INTERVAL"
+  done
+
+  capture_pane
+  printf '%s\n' "$last_capture" | grep -Eq "$selected_pruning_regex"
 }
 
 read_selection_raw() {
@@ -142,9 +179,12 @@ launch_tmux_session() {
 }
 
 init_repo() {
-  mkdir -p "$test_repo/subdir" "$home_dir" "$xdg_config_home"
+  mkdir -p "$test_repo/pruned" "$home_dir" "$xdg_config_home"
   printf 'alpha\n' >"$test_repo/a.txt"
-  printf 'bravo\n' >"$test_repo/subdir/b.txt"
+  for idx in $(seq -w 1 30); do
+    mkdir -p "$test_repo/pruned/dir-$idx"
+    printf 'nested\n' >"$test_repo/pruned/dir-$idx/nested.txt"
+  done
   : >"$selection_output"
 }
 
@@ -170,15 +210,30 @@ if ! wait_for_selection "$expected_a"; then
   fail_with_capture 'selection output did not update when moving to the first file'
 fi
 
-expected_subdir="$(realpath -m -- "$test_repo/subdir")"
+expected_pruned="$(realpath -m -- "$test_repo/pruned")"
 send_key Down
-if ! wait_for_selection "$expected_subdir"; then
+if ! wait_for_selection "$expected_pruned"; then
   fail_with_capture 'selection output did not update when moving to a directory'
 fi
 
-send_key Up
-if ! wait_for_selection "$expected_a"; then
-  fail_with_capture 'selection output did not update on a later file selection'
+if ! wait_for_regex '[0-9]+ unlisted$'; then
+  fail_with_capture 'broot never rendered a pruning row'
+fi
+
+if ! select_pruning_row; then
+  fail_with_capture 'broot never focused a pruning row'
+fi
+
+if ! wait_for_selection "$expected_pruned"; then
+  fail_with_capture 'selection output did not resolve a pruning row to its parent directory'
+fi
+
+send_key Enter
+if ! wait_for_root "$expected_pruned"; then
+  fail_with_capture 'pressing Enter on a pruning row did not focus its parent directory'
+fi
+if ! wait_for_selection "$expected_pruned"; then
+  fail_with_capture 'selection output did not stay on the parent directory after opening a pruning row'
 fi
 
 printf 'broot selection output smoke test passed\n'

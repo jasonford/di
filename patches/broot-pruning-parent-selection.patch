@@ -1,0 +1,335 @@
+diff --git a/src/browser/browser_state.rs b/src/browser/browser_state.rs
+index 3818df8..9dee9c7 100644
+--- a/src/browser/browser_state.rs
++++ b/src/browser/browser_state.rs
+@@ -128,6 +128,10 @@ impl BrowserState {
+         self.filtered_tree.as_mut().unwrap_or(&mut self.tree)
+     }
+ 
++    fn effective_selected_line(&self) -> &TreeLine {
++        self.displayed_tree().effective_selected_line()
++    }
++
+     pub fn open_selection_stay_in_broot(
+         &mut self,
+         screen: Screen,
+@@ -136,10 +140,10 @@ impl BrowserState {
+         keep_pattern: bool,
+     ) -> Result<CmdResult, ProgramError> {
+         let tree = self.displayed_tree();
+-        let line = tree.selected_line();
++        let line = tree.effective_selected_line();
+         let mut target = line.target().to_path_buf();
+         if line.is_dir() {
+-            if tree.selection == 0 {
++            if line.path.as_path() == tree.root().as_path() {
+                 // opening the root would be going to where we already are.
+                 // We go up one level instead
+                 if let Some(parent) = con.parent_in_confined_root(&target) {
+@@ -189,7 +193,7 @@ impl BrowserState {
+         con: &AppContext,
+         in_new_panel: bool,
+     ) -> CmdResult {
+-        match con.parent_in_confined_root(&self.displayed_tree().selected_line().path) {
++        match con.parent_in_confined_root(&self.effective_selected_line().path) {
+             Some(path) => CmdResult::from_optional_browser_state(
+                 BrowserState::new(
+                     path,
+@@ -259,12 +263,12 @@ impl PanelState for BrowserState {
+     }
+ 
+     fn selected_path(&self) -> Option<&Path> {
+-        Some(&self.displayed_tree().selected_line().path)
++        Some(&self.effective_selected_line().path)
+     }
+ 
+     fn selection(&self) -> Option<Selection<'_>> {
+         let tree = self.displayed_tree();
+-        let mut selection = tree.selected_line().as_selection();
++        let mut selection = tree.effective_selected_line().as_selection();
+         selection.line = tree
+             .options
+             .pattern
+@@ -398,12 +402,13 @@ impl PanelState for BrowserState {
+             }
+             Internal::focus => {
+                 let tree = self.displayed_tree();
++                let line = tree.effective_selected_line();
+                 internal_focus::on_internal(
+                     internal_exec,
+                     input_invocation,
+                     trigger_type,
+-                    &tree.selected_line().path,
+-                    tree.is_root_selected(),
++                    &line.path,
++                    line.path.as_path() == tree.root().as_path(),
+                     tree.options.clone(),
+                     app_state,
+                     cc,
+@@ -471,7 +476,7 @@ impl PanelState for BrowserState {
+                 if areas.is_first() && areas.nb_pos < con.max_panels_count {
+                     // we ask for the creation of a panel to the left
+                     internal_focus::new_panel_on_path(
+-                        self.displayed_tree().selected_line().path.clone(),
++                        self.effective_selected_line().path.clone(),
+                         screen,
+                         self.displayed_tree().options.clone(),
+                         PanelPurpose::None,
+@@ -486,7 +491,7 @@ impl PanelState for BrowserState {
+             Internal::panel_left_no_open => CmdResult::HandleInApp(Internal::panel_left_no_open),
+             Internal::panel_right => {
+                 let areas = &cc.panel.areas;
+-                let selected_path = &self.displayed_tree().selected_line().path;
++                let selected_path = &self.effective_selected_line().path;
+                 if areas.is_last() && areas.nb_pos < con.max_panels_count {
+                     let purpose = if selected_path.is_file() && cc.app.preview_panel.is_none() {
+                         PanelPurpose::Preview
+@@ -531,10 +536,10 @@ impl PanelState for BrowserState {
+             Internal::quit => CmdResult::Quit,
+             Internal::root_down => {
+                 let tree = self.displayed_tree();
+-                if tree.selection > 0 {
++                let line = tree.effective_selected_line();
++                if line.path.as_path() != tree.root().as_path() {
+                     let root_len = tree.root().components().count();
+-                    let new_root = tree
+-                        .selected_line()
++                    let new_root = line
+                         .path
+                         .components()
+                         .take(root_len + 1)
+@@ -694,7 +699,7 @@ impl PanelState for BrowserState {
+                         // we just open a new panel on the selected path,
+                         // without purpose
+                         internal_focus::new_panel_on_path(
+-                            self.displayed_tree().selected_line().path.clone(),
++                            self.effective_selected_line().path.clone(),
+                             screen,
+                             tree_options,
+                             PanelPurpose::None,
+@@ -715,7 +720,7 @@ impl PanelState for BrowserState {
+                 }
+             },
+             Internal::trash => {
+-                let path = self.displayed_tree().selected_line().path.clone();
++                let path = self.effective_selected_line().path.clone();
+                 info!("trash {:?}", &path);
+ 
+                 #[cfg(any(target_os = "windows", all(unix, not(any(target_os = "ios", target_os = "android")))))]
+@@ -773,13 +778,13 @@ impl PanelState for BrowserState {
+         }
+         let mut ssb = con.standard_status.builder(
+             PanelStateType::Tree,
+-            tree.selected_line().as_selection(),
++            tree.effective_selected_line().as_selection(),
+             width,
+         );
+         ssb.has_previous_state = has_previous_state;
+         ssb.is_filtered = self.filtered_tree.is_some();
+         ssb.has_removed_pattern = false;
+-        ssb.on_tree_root = tree.selection == 0;
++        ssb.on_tree_root = tree.effective_selected_line().path.as_path() == tree.root().as_path();
+         ssb.status()
+     }
+ 
+diff --git a/src/tree/tree.rs b/src/tree/tree.rs
+index d6f7033..4ab7a45 100644
+--- a/src/tree/tree.rs
++++ b/src/tree/tree.rs
+@@ -254,6 +254,27 @@ impl Tree {
+         depth < usize::from(line.depth) && line.left_branches[depth]
+     }
+ 
++    fn line_index_by_id(
++        &self,
++        id: TreeLineId,
++    ) -> Option<usize> {
++        self.lines.iter().position(|line| line.id == id)
++    }
++
++    pub fn effective_selected_line(&self) -> &TreeLine {
++        let selected_index = self.selection;
++        let selected_line = &self.lines[selected_index];
++        if !selected_line.line_type.is_pruning() {
++            return selected_line;
++        }
++        let Some(parent_id) = selected_line.parent_id else {
++            return selected_line;
++        };
++        self.line_index_by_id(parent_id)
++            .map(|parent_index| &self.lines[parent_index])
++            .unwrap_or(selected_line)
++    }
++
+     /// select another line
+     ///
+     /// For example the following one if dy is 1.
+@@ -279,7 +300,7 @@ impl Tree {
+                 }
+                 self.selection = (self.selection + dy) % l;
+             }
+-            if self.lines[self.selection].is_selectable() {
++            if self.lines[self.selection].accepts_cursor_selection() {
+                 break;
+             }
+         }
+@@ -337,7 +358,7 @@ impl Tree {
+         y: usize,
+     ) -> bool {
+         let y = y + self.scroll;
+-        if y < self.lines.len() && self.lines[y].is_selectable() {
++        if y < self.lines.len() && self.lines[y].accepts_cursor_selection() {
+             self.selection = y;
+             return true;
+         }
+@@ -353,7 +374,7 @@ impl Tree {
+             let l = self.lines.len();
+             loop {
+                 self.selection = (self.selection + l + 1) % l;
+-                if self.lines[self.selection].is_selectable() {
++                if self.lines[self.selection].accepts_cursor_selection() {
+                     break;
+                 }
+             }
+@@ -409,7 +430,7 @@ impl Tree {
+         path: &Path,
+     ) -> bool {
+         for (idx, line) in self.lines.iter().enumerate() {
+-            if !line.is_selectable() {
++            if !line.accepts_cursor_selection() {
+                 continue;
+             }
+             if path == line.path {
+@@ -422,7 +443,7 @@ impl Tree {
+     pub fn try_select_first(&mut self) -> bool {
+         for idx in 0..self.lines.len() {
+             let line = &self.lines[idx];
+-            if line.is_selectable() {
++            if line.accepts_cursor_selection() {
+                 self.selection = idx;
+                 self.scroll = 0;
+                 return true;
+@@ -436,7 +457,7 @@ impl Tree {
+     ) -> bool {
+         for idx in (0..self.lines.len()).rev() {
+             let line = &self.lines[idx];
+-            if line.is_selectable() {
++            if line.accepts_cursor_selection() {
+                 self.selection = idx;
+                 self.make_selection_visible(page_height);
+                 return true;
+@@ -452,7 +473,7 @@ impl Tree {
+         for di in (0..self.lines.len()).rev() {
+             let idx = (self.selection + di) % self.lines.len();
+             let line = &self.lines[idx];
+-            if !line.is_selectable() || line.depth != depth {
++            if !line.accepts_cursor_selection() || line.depth != depth {
+                 continue;
+             }
+             self.selection = idx;
+@@ -469,7 +490,7 @@ impl Tree {
+         for di in 0..self.lines.len() {
+             let idx = (self.selection + di + 1) % self.lines.len();
+             let line = &self.lines[idx];
+-            if !line.is_selectable() || line.depth != depth {
++            if !line.accepts_cursor_selection() || line.depth != depth {
+                 continue;
+             }
+             self.selection = idx;
+@@ -489,7 +510,7 @@ impl Tree {
+         for di in (0..self.lines.len()).rev() {
+             let idx = (self.selection + di) % self.lines.len();
+             let line = &self.lines[idx];
+-            if !line.is_selectable() {
++            if !line.accepts_cursor_selection() {
+                 continue;
+             }
+             if !filter(line) {
+@@ -514,7 +535,7 @@ impl Tree {
+         for di in 0..self.lines.len() {
+             let idx = (self.selection + di + 1) % self.lines.len();
+             let line = &self.lines[idx];
+-            if !line.is_selectable() {
++            if !line.accepts_cursor_selection() {
+                 continue;
+             }
+             if !filter(line) {
+@@ -872,6 +893,34 @@ mod tests {
+         );
+     }
+ 
++    #[test]
++    fn pruning_line_accepts_cursor_selection_and_resolves_to_parent() {
++        let tmp_dir = tempfile::tempdir().unwrap();
++        let repo_root = tmp_dir.path().to_path_buf();
++        let parent_dir = repo_root.join("pruned");
++
++        for idx in 1..=30 {
++            let child_dir = parent_dir.join(format!("dir-{idx:02}"));
++            fs::create_dir_all(&child_dir).unwrap();
++            fs::write(child_dir.join("nested.txt"), "nested\n").unwrap();
++        }
++
++        let con = AppContext::default();
++        let mut tree = build_tree_with_targeted_size(&repo_root, &con, 20);
++        let pruning_index = tree
++            .lines
++            .iter()
++            .position(|line| matches!(line.line_type, TreeLineType::Pruning))
++            .unwrap();
++
++        assert!(tree.try_select_y(pruning_index));
++        assert!(tree.selected_line().line_type.is_pruning());
++        assert_eq!(
++            tree.effective_selected_line().path.as_path(),
++            parent_dir.as_path(),
++        );
++    }
++
+     fn git_context() -> AppContext {
+         let mut con = AppContext::default();
+         con.initial_tree_options.show_git_file_info = true;
+diff --git a/src/tree/tree_line.rs b/src/tree/tree_line.rs
+index 24ba976..b232c86 100644
+--- a/src/tree/tree_line.rs
++++ b/src/tree/tree_line.rs
+@@ -143,6 +143,9 @@ impl TreeLine {
+     pub fn is_selectable(&self) -> bool {
+         !matches!(&self.line_type, TreeLineType::Pruning)
+     }
++    pub fn accepts_cursor_selection(&self) -> bool {
++        self.is_selectable() || matches!(&self.line_type, TreeLineType::Pruning)
++    }
+     pub fn is_dir(&self) -> bool {
+         match &self.line_type {
+             TreeLineType::Dir => true,
+diff --git a/src/verb/internal_path.rs b/src/verb/internal_path.rs
+index fac413c..ce02fe7 100644
+--- a/src/verb/internal_path.rs
++++ b/src/verb/internal_path.rs
+@@ -34,10 +34,11 @@ pub fn determine_path(
+         .and_then(|invocation| invocation.args.as_ref());
+     match trigger_type {
+         TriggerType::Input(verb) => {
++            let selected_path = &tree.effective_selected_line().path;
+             let path = path_from_input(
+                 verb,
+                 internal_exec,
+-                &tree.selected_line().path,
++                selected_path,
+                 input_arg,
+                 app_state,
+                 cc.app.con,
+@@ -55,7 +56,11 @@ pub fn determine_path(
+                 let path =
+                     cc.app
+                         .con
+-                        .confine_input_path(&tree.selected_line().path, PathAnchor::Unspecified, arg)?;
++                        .confine_input_path(
++                            &tree.effective_selected_line().path,
++                            PathAnchor::Unspecified,
++                            arg,
++                        )?;
+                 Ok(Some(path))
+             } else {
+                 // there's nothing really to do here

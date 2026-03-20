@@ -4,3 +4,6 @@
   that dir, open preview as terminal pane in that dir... etc).
   basically treat selection of those prune lines the same as
   selection of parent dir.
+
+- if an unlisted row shows stats, no need to show stats on
+  parent dir.
