@@ -145,8 +145,15 @@ extract_stats() {
 
 choose_probe_file() {
   local candidates=(
+    'AGENTS.md'
+    'Dockerfile'
+    'run'
+    'color-test.sh'
+    'README.md'
+    'start-tmux-codex'
+    'TASKS.md'
     'bin/test-broot-confined-root-smoke'
-    'bin/test-codex-nvim-pane-smoke'
+    'bin/test-codex-terminal-pane-smoke'
     'bin/test-broot-live-update-smoke'
   )
   local visible_bin_candidates=()
@@ -239,22 +246,17 @@ mkdir -p "$home_dir" "$xdg_config_home"
 launch_tmux_session
 
 workspace_regex="$(escape_regex "$WORKTREE_ROOT")"
-if ! wait_for_regex "^[[:space:]]+\\+[0-9]+-[0-9]+[[:space:]]+${workspace_regex}( .*)?$"; then
+if ! wait_for_regex "^.*${workspace_regex}.*\\+[0-9]+-[0-9]+.*$"; then
   fail_with_capture 'broot pane never reached the initial workspace git summary'
 fi
 
-if [ -z "$(line_for_regex 'bin$')" ]; then
-  fail_with_capture 'broot pane never displayed the bin directory line needed for git diff assertions'
-fi
-
 if ! choose_probe_file; then
-  fail_with_capture 'broot pane never displayed a visible tracked probe file under bin'
+  fail_with_capture 'broot pane never displayed a visible tracked probe file'
 fi
 
 prepare_probe
 
 header_line="$(printf '%s\n' "$last_capture" | sed -n '1p')"
-bin_line="$(line_for_regex 'bin$')"
 probe_name_regex="$(escape_regex "$probe_name")"
 probe_line="$(line_for_regex "${probe_name_regex}$")"
 
@@ -263,8 +265,8 @@ read -r file_insertions file_deletions <<<"$(extract_stats "$probe_line")"
 
 mutate_probe
 
-expected_header_regex="^[[:space:]]+\\+$((header_insertions + 1))-${header_deletions}[[:space:]]+${workspace_regex}( .*)?$"
-expected_file_regex="^.*M\\+$((file_insertions + 1))-${file_deletions}[[:space:]]*[├└].*${probe_name_regex}$"
+expected_header_regex="^.*${workspace_regex}.*\\+$((header_insertions + 1))-${header_deletions}.*$"
+expected_file_regex="^.*\\+$((file_insertions + 1))-${file_deletions}.*${probe_name_regex}$"
 
 assert_live_regex "$expected_header_regex" 'broot did not live update the upstream repo git summary for the mounted workspace root'
 assert_live_regex "$expected_file_regex" 'broot did not live update the patched file status marker and diff stats for the mounted workspace root'

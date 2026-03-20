@@ -19,7 +19,6 @@ session_slug="$(printf '%s' "$SESSION_NAME" | tr -c 'A-Za-z0-9._-' '_')"
 runtime_dir="/tmp/codex-broot-$session_slug"
 selection_output="$runtime_dir/selection.txt"
 editor_state_file="$runtime_dir/editor-state.tsv"
-editor_socket="$runtime_dir/nvim.sock"
 
 tmux_cmd=(tmux -u -f "$TMUX_CONFIG")
 
@@ -27,6 +26,9 @@ codex_cmd=(
   codex
   --model "$MODEL"
   --dangerously-bypass-approvals-and-sandbox
+)
+terminal_cmd=(
+  "$SCRIPT_ROOT/bin/codex-terminal-shell"
 )
 
 if [ "$CODEX_NO_ALT_SCREEN" != "0" ]; then
@@ -42,7 +44,7 @@ broot_cmd=(
   HOME="$runtime_dir/home"
   BR_INSTALL=no
   XDG_CONFIG_HOME="$runtime_dir/xdg-config"
-  CODEX_BROOT_OPEN_SCRIPT="$SCRIPT_ROOT/bin/codex-open-in-vim"
+  CODEX_BROOT_OPEN_SCRIPT="$SCRIPT_ROOT/bin/codex-focus-terminal"
   broot
   --selection-output "$selection_output"
   --editor-state-file "$editor_state_file"
@@ -57,7 +59,6 @@ if ! "${tmux_cmd[@]}" has-session -t "$SESSION_NAME" 2>/dev/null; then
   mkdir -p "$runtime_dir/home" "$runtime_dir/xdg-config"
   : > "$selection_output"
   : > "$editor_state_file"
-  rm -f "$editor_socket"
   "$SCRIPT_ROOT/bin/codex-prepare-broot-config" "$runtime_dir/xdg-config"
   "${tmux_cmd[@]}" new-session -d -s "$SESSION_NAME" -c "$WORKDIR" "${codex_cmd[@]}"
   window_id="$("${tmux_cmd[@]}" display-message -p -t "$SESSION_NAME:0" '#{window_id}')"
@@ -70,21 +71,19 @@ if ! "${tmux_cmd[@]}" has-session -t "$SESSION_NAME" 2>/dev/null; then
   "${tmux_cmd[@]}" set-option -t "$SESSION_NAME" @codex_repo_name "$REPO_NAME"
   "${tmux_cmd[@]}" set-option -t "$SESSION_NAME" @codex_window_id "$window_id"
   "${tmux_cmd[@]}" set-option -t "$SESSION_NAME" @codex_pane_id "$codex_pane"
-  "${tmux_cmd[@]}" set-option -t "$SESSION_NAME" @codex_nvim_socket "$editor_socket"
-  "${tmux_cmd[@]}" set-option -t "$SESSION_NAME" @codex_nvim_state_file "$editor_state_file"
+  "${tmux_cmd[@]}" set-option -t "$SESSION_NAME" @broot_editor_state_file "$editor_state_file"
   broot_pane="$("${tmux_cmd[@]}" split-window -h -b -P -F '#{pane_id}' -t "$window_id" -c "$WORKDIR" "${broot_cmd[@]}")"
   "${tmux_cmd[@]}" set-option -t "$SESSION_NAME" @broot_pane_id "$broot_pane"
-  printf -v preview_shell 'bash %q %q >/dev/null 2>&1' \
-    "$SCRIPT_ROOT/bin/codex-watch-broot-selection-preview" \
-    "$SESSION_NAME"
-  "${tmux_cmd[@]}" run-shell -b "$preview_shell"
-  printf -v nvim_prewarm_shell 'bash %q %q >/dev/null 2>&1' \
-    "$SCRIPT_ROOT/bin/codex-nvim-prewarm" \
-    "$SESSION_NAME"
-  "${tmux_cmd[@]}" run-shell -b "$nvim_prewarm_shell"
-  "$SCRIPT_ROOT/bin/codex-layout" two-column "$SESSION_NAME"
+  terminal_pane="$("${tmux_cmd[@]}" split-window -h -b -P -F '#{pane_id}' -t "$codex_pane" -c "$WORKDIR" "${terminal_cmd[@]}")"
+  "${tmux_cmd[@]}" set-option -t "$SESSION_NAME" @codex_terminal_pane_id "$terminal_pane"
+  "$SCRIPT_ROOT/bin/codex-layout" three-column "$SESSION_NAME"
   "${tmux_cmd[@]}" select-pane -t "$codex_pane"
 fi
+
+printf -v layout_hook_cmd '%q %q %q' "$SCRIPT_ROOT/bin/codex-layout" "three-column" "$SESSION_NAME"
+"${tmux_cmd[@]}" set-hook -t "$SESSION_NAME" client-attached "run-shell \"$layout_hook_cmd\""
+"${tmux_cmd[@]}" set-hook -t "$SESSION_NAME" client-resized "run-shell \"$layout_hook_cmd\""
+"$SCRIPT_ROOT/bin/codex-layout" three-column "$SESSION_NAME" >/dev/null 2>&1 || true
 
 "${tmux_cmd[@]}" source-file "$TMUX_CONFIG"
 exec "${tmux_cmd[@]}" attach-session -t "$SESSION_NAME"

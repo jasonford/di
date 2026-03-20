@@ -1,0 +1,149 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+SCRIPT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+TMUX_CONFIG="${TMUX_CONFIG:-$SCRIPT_ROOT/.tmux/tmux.conf}"
+TMUX_SESSION_NAME="codex-terminal-pane-smoke"
+tmux_cmd=(tmux -u -f "$TMUX_CONFIG")
+
+cleanup() {
+  "${tmux_cmd[@]}" kill-session -t "$TMUX_SESSION_NAME" >/dev/null 2>&1 || true
+}
+trap cleanup EXIT
+
+assert_equals() {
+  local expected="$1"
+  local actual="$2"
+  local message="$3"
+
+  if [ "$expected" != "$actual" ]; then
+    printf '%s\nexpected: %s\nactual: %s\n' "$message" "$expected" "$actual" >&2
+    exit 1
+  fi
+}
+
+require_command() {
+  if ! command -v "$1" >/dev/null 2>&1; then
+    printf 'missing required command: %s\n' "$1" >&2
+    exit 1
+  fi
+}
+
+capture_pane() {
+  "${tmux_cmd[@]}" capture-pane -p -t "$1"
+}
+
+pane_width() {
+  "${tmux_cmd[@]}" display-message -p -t "$1" '#{pane_width}'
+}
+
+pane_left() {
+  "${tmux_cmd[@]}" display-message -p -t "$1" '#{pane_left}'
+}
+
+pane_dead() {
+  "${tmux_cmd[@]}" display-message -p -t "$1" '#{pane_dead}'
+}
+
+window_width() {
+  "${tmux_cmd[@]}" display-message -p -t "$1" '#{window_width}'
+}
+
+active_pane() {
+  "${tmux_cmd[@]}" display-message -p -t "$TMUX_SESSION_NAME:0" '#{pane_id}'
+}
+
+wait_for_dead_state() {
+  local pane_id="$1"
+  local expected="$2"
+  local deadline=$((SECONDS + 5))
+
+  while (( SECONDS < deadline )); do
+    if [ "$(pane_dead "$pane_id")" = "$expected" ]; then
+      return 0
+    fi
+    sleep 0.1
+  done
+
+  [ "$(pane_dead "$pane_id")" = "$expected" ]
+}
+
+wait_for_prompt() {
+  local pane_id="$1"
+  local expected="$2"
+  local deadline=$((SECONDS + 5))
+  local capture
+
+  while (( SECONDS < deadline )); do
+    capture="$(capture_pane "$pane_id")"
+    if printf '%s' "$capture" | grep -Fq "$expected"; then
+      return 0
+    fi
+    sleep 0.1
+  done
+
+  capture="$(capture_pane "$pane_id")"
+  printf '%s' "$capture" | grep -Fq "$expected"
+}
+
+require_command tmux
+
+"${tmux_cmd[@]}" new-session -d -s "$TMUX_SESSION_NAME" -x 160 -y 24
+window_id="$("${tmux_cmd[@]}" display-message -p -t "$TMUX_SESSION_NAME:0" '#{window_id}')"
+codex_pane="$("${tmux_cmd[@]}" display-message -p -t "$window_id" '#{pane_id}')"
+broot_pane="$("${tmux_cmd[@]}" split-window -d -h -b -P -F '#{pane_id}' -t "$window_id")"
+terminal_pane="$("${tmux_cmd[@]}" split-window -d -h -b -P -F '#{pane_id}' -t "$codex_pane" -c "$SCRIPT_ROOT" "$SCRIPT_ROOT/bin/codex-terminal-shell")"
+
+"${tmux_cmd[@]}" set-option -t "$TMUX_SESSION_NAME" remain-on-exit on
+"${tmux_cmd[@]}" set-option -t "$TMUX_SESSION_NAME" @broot_workspace_dir "$SCRIPT_ROOT"
+"${tmux_cmd[@]}" set-option -t "$TMUX_SESSION_NAME" @codex_pane_id "$codex_pane"
+"${tmux_cmd[@]}" set-option -t "$TMUX_SESSION_NAME" @broot_pane_id "$broot_pane"
+"${tmux_cmd[@]}" set-option -t "$TMUX_SESSION_NAME" @codex_terminal_pane_id "$terminal_pane"
+
+"$SCRIPT_ROOT/bin/codex-layout" three-column "$TMUX_SESSION_NAME"
+
+if ! wait_for_prompt "$terminal_pane" "$SCRIPT_ROOT >"; then
+  printf 'terminal shell did not use the simplified prompt\n' >&2
+  capture_pane "$terminal_pane" >&2
+  exit 1
+fi
+
+side_width=48
+middle_width="$(( $(window_width "$codex_pane") - side_width - side_width - 2 ))"
+assert_equals "$side_width" "$(pane_width "$broot_pane")" 'three-column layout did not keep the broot pane at 48 columns'
+assert_equals "$middle_width" "$(pane_width "$terminal_pane")" 'three-column layout did not leave the terminal pane as the remaining width'
+assert_equals "$side_width" "$(pane_width "$codex_pane")" 'three-column layout did not keep the codex pane at 48 columns'
+
+if [ "$(pane_left "$broot_pane")" -ge "$(pane_left "$terminal_pane")" ]; then
+  printf 'startup should place the broot pane to the left of the terminal pane\n' >&2
+  exit 1
+fi
+if [ "$(pane_left "$terminal_pane")" -ge "$(pane_left "$codex_pane")" ]; then
+  printf 'startup should place the terminal pane to the left of Codex\n' >&2
+  exit 1
+fi
+
+"${tmux_cmd[@]}" select-pane -t "$broot_pane"
+TMUX_PANE="$broot_pane" "$SCRIPT_ROOT/bin/codex-focus-terminal"
+assert_equals "$terminal_pane" "$(active_pane)" 'terminal focus hook did not select the middle terminal pane'
+
+"${tmux_cmd[@]}" send-keys -t "$terminal_pane" "exit" C-m
+if ! wait_for_dead_state "$terminal_pane" 1; then
+  printf 'terminal pane never exited for respawn verification\n' >&2
+  exit 1
+fi
+
+"${tmux_cmd[@]}" select-pane -t "$broot_pane"
+TMUX_PANE="$broot_pane" "$SCRIPT_ROOT/bin/codex-focus-terminal"
+if ! wait_for_dead_state "$terminal_pane" 0; then
+  printf 'terminal focus hook did not respawn a dead terminal pane\n' >&2
+  exit 1
+fi
+assert_equals "$terminal_pane" "$(active_pane)" 'terminal focus hook did not select the respawned terminal pane'
+if ! wait_for_prompt "$terminal_pane" "$SCRIPT_ROOT >"; then
+  printf 'respawned terminal shell did not use the simplified prompt\n' >&2
+  capture_pane "$terminal_pane" >&2
+  exit 1
+fi
+
+printf 'codex terminal pane smoke test passed\n'

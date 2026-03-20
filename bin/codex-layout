@@ -2,7 +2,7 @@
 set -euo pipefail
 
 usage() {
-  printf 'usage: codex-layout <two-column|three-column> [session-name]\n' >&2
+  printf 'usage: codex-layout <three-column> [session-name]\n' >&2
 }
 
 if [ "$#" -lt 1 ] || [ "$#" -gt 2 ]; then
@@ -48,36 +48,29 @@ clamp_width() {
 
 codex_pane="$(tmux_option @codex_pane_id)"
 broot_pane="$(tmux_option @broot_pane_id)"
-nvim_pane="$(tmux_option @codex_nvim_pane_id)"
+terminal_pane="$(tmux_option @codex_terminal_pane_id)"
+
+if [ "$layout_name" != "three-column" ]; then
+  usage
+  exit 1
+fi
 
 if ! pane_live "$codex_pane"; then
   printf 'missing codex pane in session %s\n' "$session_name" >&2
   exit 1
 fi
+if ! pane_live "$broot_pane"; then
+  printf 'missing broot pane in session %s\n' "$session_name" >&2
+  exit 1
+fi
+if ! pane_live "$terminal_pane"; then
+  printf 'missing terminal pane in session %s\n' "$session_name" >&2
+  exit 1
+fi
 
 window_width="$(tmux display-message -p -t "$codex_pane" '#{window_width}')"
 fixed_side_width=48
+side_width="$(clamp_width "$fixed_side_width" "$(( (window_width - 3) / 2 ))")"
 
-case "$layout_name" in
-  two-column)
-    codex_width="$(clamp_width "$fixed_side_width" "$(( window_width - 2 ))")"
-    tmux resize-pane -t "$codex_pane" -x "$codex_width" >/dev/null 2>&1 || true
-    ;;
-  three-column)
-    if ! pane_live "$nvim_pane"; then
-      printf 'missing nvim pane in session %s\n' "$session_name" >&2
-      exit 1
-    fi
-    if ! pane_live "$broot_pane"; then
-      printf 'missing broot pane in session %s\n' "$session_name" >&2
-      exit 1
-    fi
-    side_width="$(clamp_width "$fixed_side_width" "$(( (window_width - 3) / 2 ))")"
-    tmux resize-pane -t "$broot_pane" -x "$side_width" >/dev/null 2>&1 || true
-    tmux resize-pane -t "$codex_pane" -x "$side_width" >/dev/null 2>&1 || true
-    ;;
-  *)
-    usage
-    exit 1
-    ;;
-esac
+tmux resize-pane -t "$broot_pane" -x "$side_width" >/dev/null 2>&1 || true
+tmux resize-pane -t "$codex_pane" -x "$side_width" >/dev/null 2>&1 || true

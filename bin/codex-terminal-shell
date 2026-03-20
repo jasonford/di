@@ -1,0 +1,11 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+SCRIPT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+rcfile="$SCRIPT_ROOT/config/bash/terminal.bashrc"
+
+if [ ! -f "$rcfile" ]; then
+  exec bash -i
+fi
+
+exec bash --rcfile "$rcfile" -i
