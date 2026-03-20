@@ -26,7 +26,44 @@ pane_live() {
   [ "$(tmux display-message -p -t "$pane_id" '#{pane_dead}' 2>/dev/null || printf '1')" = "0" ]
 }
 
-read_selection_dir() {
+pane_command() {
+  local pane_id="$1"
+  [ -n "$pane_id" ] || return 0
+  tmux display-message -p -t "$pane_id" '#{pane_current_command}' 2>/dev/null || true
+}
+
+pane_path() {
+  local pane_id="$1"
+  local current_path=""
+
+  [ -n "$pane_id" ] || return 0
+  current_path="$(tmux display-message -p -t "$pane_id" '#{pane_current_path}' 2>/dev/null || true)"
+  normalize_path "$current_path"
+}
+
+is_shell_command() {
+  case "$1" in
+    bash|sh|zsh|fish)
+      return 0
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+}
+
+is_vim_command() {
+  case "$1" in
+    nvim|vim|vi|view|vimdiff)
+      return 0
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+}
+
+read_selection_path() {
   local selection_output="$1"
   local workspace_dir="$2"
   local selected_path=""
@@ -41,21 +78,125 @@ read_selection_dir() {
     selected_path="${workspace_dir:-.}/$selected_path"
   fi
 
-  if [ -d "$selected_path" ]; then
-    normalize_path "$selected_path"
+  normalize_path "$selected_path"
+}
+
+selection_target_dir() {
+  local selection_path="$1"
+
+  [ -n "$selection_path" ] || return 0
+
+  if [ -d "$selection_path" ]; then
+    printf '%s\n' "$selection_path"
     return 0
   fi
 
-  if [ -e "$selected_path" ]; then
-    normalize_path "$(dirname -- "$selected_path")"
+  if [ -e "$selection_path" ]; then
+    normalize_path "$(dirname -- "$selection_path")"
   fi
+}
+
+vim_single_quote_escape() {
+  printf "%s" "$1" | sed "s/'/''/g"
+}
+
+relative_open_path() {
+  local current_dir="$1"
+  local target_path="$2"
+  local relative_path=""
+
+  if [ -n "$current_dir" ] && [ -n "$target_path" ]; then
+    relative_path="$(realpath --relative-to="$current_dir" -- "$target_path" 2>/dev/null || true)"
+  fi
+
+  if [ -z "$relative_path" ]; then
+    relative_path="$target_path"
+  fi
+
+  case "$relative_path" in
+    ./*|../*|/*)
+      ;;
+    *)
+      relative_path="./$relative_path"
+      ;;
+  esac
+
+  printf '%s\n' "$relative_path"
+}
+
+send_shell_open_command() {
+  local pane_id="$1"
+  local selected_path="$2"
+  local current_path=""
+  local relative_path=""
+  local open_command=""
+
+  current_path="$(pane_path "$pane_id")"
+  relative_path="$(relative_open_path "$current_path" "$selected_path")"
+  printf -v open_command 'nvim %q' "$relative_path"
+
+  tmux send-keys -t "$pane_id" C-u "$open_command" C-m >/dev/null 2>&1
+}
+
+send_vim_drop_keys() {
+  local pane_id="$1"
+  local selected_path="$2"
+  local current_path=""
+  local relative_path=""
+  local escaped_path=""
+  local command=""
+
+  current_path="$(pane_path "$pane_id")"
+  relative_path="$(relative_open_path "$current_path" "$selected_path")"
+  escaped_path="$(vim_single_quote_escape "$relative_path")"
+  printf -v command ":execute 'drop ' .. fnameescape('%s')" "$escaped_path"
+  tmux send-keys -t "$pane_id" C-\\ C-n Escape "$command" Enter >/dev/null 2>&1
+}
+
+wait_for_shell() {
+  local pane_id="$1"
+  local attempts=20
+  local current_command=""
+
+  while [ "$attempts" -gt 0 ]; do
+    current_command="$(pane_command "$pane_id")"
+    if is_shell_command "$current_command"; then
+      return 0
+    fi
+    sleep 0.1
+    attempts=$((attempts - 1))
+  done
+
+  return 1
+}
+
+wait_for_path_sync() {
+  local pane_id="$1"
+  local expected_path="$2"
+  local attempts=10
+  local current_path=""
+
+  [ -n "$expected_path" ] || return 0
+
+  while [ "$attempts" -gt 0 ]; do
+    current_path="$(pane_path "$pane_id")"
+    if [ "$current_path" = "$expected_path" ]; then
+      return 0
+    fi
+    sleep 0.1
+    attempts=$((attempts - 1))
+  done
+
+  return 1
 }
 
 workspace_dir="$(tmux_option @broot_workspace_dir)"
 selection_output="$(tmux_option @broot_selection_output)"
 terminal_pane="$(tmux_option @codex_terminal_pane_id)"
 terminal_dir="$(tmux_option @codex_terminal_dir)"
-selected_dir="$(read_selection_dir "$selection_output" "$workspace_dir")"
+selection_path="$(read_selection_path "$selection_output" "$workspace_dir")"
+selected_dir="$(selection_target_dir "$selection_path")"
+current_command=""
 
 [ -n "$terminal_pane" ] || exit 0
 
@@ -66,6 +207,17 @@ fi
 
 if ! pane_live "$terminal_pane"; then
   tmux respawn-pane -k -t "$terminal_pane" -c "${terminal_dir:-${workspace_dir:-.}}" "$SCRIPT_ROOT/bin/codex-terminal-shell" >/dev/null 2>&1 || exit 0
+fi
+
+current_command="$(pane_command "$terminal_pane")"
+
+if [ -n "$selection_path" ] && [ -f "$selection_path" ]; then
+  if is_shell_command "$current_command" || wait_for_shell "$terminal_pane"; then
+    wait_for_path_sync "$terminal_pane" "$selected_dir" || true
+    send_shell_open_command "$terminal_pane" "$selection_path" || true
+  elif is_vim_command "$current_command"; then
+    send_vim_drop_keys "$terminal_pane" "$selection_path" || true
+  fi
 fi
 
 tmux select-pane -t "$terminal_pane" >/dev/null 2>&1 || true

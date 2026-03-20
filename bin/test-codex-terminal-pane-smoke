@@ -7,6 +7,11 @@ TMUX_SESSION_NAME="codex-terminal-pane-smoke"
 tmux_cmd=(tmux -u -f "$TMUX_CONFIG")
 tmp_dir="$(mktemp -d /tmp/codex-terminal-pane.XXXXXX)"
 selection_output="$tmp_dir/selection.txt"
+home_dir="$tmp_dir/home"
+xdg_config_home="$SCRIPT_ROOT/config"
+xdg_data_home="$tmp_dir/xdg-data"
+xdg_cache_home="$tmp_dir/xdg-cache"
+xdg_state_home="$tmp_dir/xdg-state"
 watcher_pid=""
 
 cleanup() {
@@ -14,7 +19,7 @@ cleanup() {
     kill "$watcher_pid" >/dev/null 2>&1 || true
   fi
   "${tmux_cmd[@]}" kill-session -t "$TMUX_SESSION_NAME" >/dev/null 2>&1 || true
-  rm -rf "$tmp_dir"
+  rm -rf "$tmp_dir" >/dev/null 2>&1 || true
 }
 trap cleanup EXIT
 
@@ -34,6 +39,15 @@ require_command() {
     printf 'missing required command: %s\n' "$1" >&2
     exit 1
   fi
+}
+
+bootstrap_nvim_plugins() {
+  HOME="$home_dir" \
+    XDG_CONFIG_HOME="$xdg_config_home" \
+    XDG_DATA_HOME="$xdg_data_home" \
+    XDG_CACHE_HOME="$xdg_cache_home" \
+    XDG_STATE_HOME="$xdg_state_home" \
+    nvim --headless '+qall' >/dev/null 2>&1
 }
 
 capture_pane() {
@@ -130,6 +144,21 @@ wait_for_capture_text() {
   printf '%s' "$capture" | grep -Fq "$expected"
 }
 
+wait_for_command() {
+  local pane_id="$1"
+  local expected="$2"
+  local deadline=$((SECONDS + 10))
+
+  while (( SECONDS < deadline )); do
+    if [ "$(tmux display-message -p -t "$pane_id" '#{pane_current_command}')" = "$expected" ]; then
+      return 0
+    fi
+    sleep 0.1
+  done
+
+  [ "$(tmux display-message -p -t "$pane_id" '#{pane_current_command}')" = "$expected" ]
+}
+
 relative_cd_path() {
   local current_dir="$1"
   local target_dir="$2"
@@ -153,10 +182,18 @@ relative_cd_path() {
 }
 
 require_command tmux
+require_command nvim
 
+mkdir -p "$home_dir" "$xdg_data_home" "$xdg_cache_home" "$xdg_state_home"
+bootstrap_nvim_plugins
 "${tmux_cmd[@]}" new-session -d -s "$TMUX_SESSION_NAME" -x 160 -y 24
 window_id="$("${tmux_cmd[@]}" display-message -p -t "$TMUX_SESSION_NAME:0" '#{window_id}')"
 codex_pane="$("${tmux_cmd[@]}" display-message -p -t "$window_id" '#{pane_id}')"
+"${tmux_cmd[@]}" set-environment -t "$TMUX_SESSION_NAME" HOME "$home_dir"
+"${tmux_cmd[@]}" set-environment -t "$TMUX_SESSION_NAME" XDG_CONFIG_HOME "$xdg_config_home"
+"${tmux_cmd[@]}" set-environment -t "$TMUX_SESSION_NAME" XDG_DATA_HOME "$xdg_data_home"
+"${tmux_cmd[@]}" set-environment -t "$TMUX_SESSION_NAME" XDG_CACHE_HOME "$xdg_cache_home"
+"${tmux_cmd[@]}" set-environment -t "$TMUX_SESSION_NAME" XDG_STATE_HOME "$xdg_state_home"
 broot_pane="$("${tmux_cmd[@]}" split-window -d -h -b -P -F '#{pane_id}' -t "$window_id")"
 terminal_pane="$("${tmux_cmd[@]}" split-window -d -h -b -P -F '#{pane_id}' -t "$codex_pane" -c "$SCRIPT_ROOT" "$SCRIPT_ROOT/bin/codex-terminal-shell")"
 
@@ -222,10 +259,14 @@ sync_dir="$tmp_dir/dir with spaces"
 sync_file="$sync_dir/note.txt"
 other_dir="$tmp_dir/o"
 other_file="$other_dir/f.md"
+reopen_dir="$tmp_dir/reopen dir"
+reopen_file="$reopen_dir/second file.txt"
 mkdir -p "$sync_dir"
 mkdir -p "$other_dir"
+mkdir -p "$reopen_dir"
 printf 'note\n' >"$sync_file"
 printf 'note\n' >"$other_file"
+printf 'first line in reopened file\n' >"$reopen_file"
 printf '%s\n' "$sync_dir" >"$selection_output"
 
 if ! wait_for_path "$terminal_pane" "$sync_dir"; then
@@ -255,7 +296,46 @@ if ! wait_for_capture_text "$terminal_pane" "$expected_file_cd"; then
   exit 1
 fi
 
-"${tmux_cmd[@]}" send-keys -t "$terminal_pane" "exit" C-m
+printf '%s\n' "$sync_file" >"$selection_output"
+"${tmux_cmd[@]}" select-pane -t "$broot_pane"
+TMUX_PANE="$broot_pane" "$SCRIPT_ROOT/bin/codex-focus-terminal"
+if ! wait_for_command "$terminal_pane" "nvim"; then
+  printf 'file activation did not start Neovim in the middle pane\n' >&2
+  capture_pane "$terminal_pane" >&2
+  exit 1
+fi
+if ! wait_for_capture_text "$terminal_pane" 'note'; then
+  printf 'Neovim did not open the selected file contents\n' >&2
+  capture_pane "$terminal_pane" >&2
+  exit 1
+fi
+assert_equals "$terminal_pane" "$(active_pane)" 'file activation did not focus the middle terminal pane after opening Neovim'
+
+printf '%s\n' "$reopen_file" >"$selection_output"
+"${tmux_cmd[@]}" select-pane -t "$broot_pane"
+TMUX_PANE="$broot_pane" "$SCRIPT_ROOT/bin/codex-focus-terminal"
+if ! wait_for_capture_text "$terminal_pane" 'first line in reopened file'; then
+  printf 'file activation did not switch the running Neovim instance to the new file\n' >&2
+  capture_pane "$terminal_pane" >&2
+  exit 1
+fi
+assert_equals "$terminal_pane" "$(active_pane)" 'reopening a file did not focus the running Neovim pane'
+
+"${tmux_cmd[@]}" send-keys -t "$terminal_pane" Escape ":qa!" Enter
+if ! wait_for_command "$terminal_pane" "bash"; then
+  printf 'Neovim never returned control to the shell for exit verification\n' >&2
+  capture_pane "$terminal_pane" >&2
+  exit 1
+fi
+
+"${tmux_cmd[@]}" send-keys -t "$terminal_pane" "history | tail -n 5" C-m
+if ! wait_for_capture_text "$terminal_pane" 'nvim ./note.txt'; then
+  printf 'file activation did not send a visible relative nvim command into the middle pane\n' >&2
+  capture_pane "$terminal_pane" >&2
+  exit 1
+fi
+
+"${tmux_cmd[@]}" send-keys -t "$terminal_pane" "exit 0" C-m
 if ! wait_for_dead_state "$terminal_pane" 1; then
   printf 'terminal pane never exited for synced-dir respawn verification\n' >&2
   exit 1
@@ -268,10 +348,11 @@ if ! wait_for_dead_state "$terminal_pane" 0; then
   exit 1
 fi
 assert_equals "$terminal_pane" "$(active_pane)" 'terminal focus hook did not select the synced-dir respawned pane'
-if ! wait_for_path "$terminal_pane" "$other_dir"; then
+if ! wait_for_path "$terminal_pane" "$reopen_dir"; then
   printf 'respawned terminal shell did not restore the last synced file parent directory\n' >&2
   capture_pane "$terminal_pane" >&2
   exit 1
 fi
 
 printf 'codex terminal pane smoke test passed\n'
+exit 0

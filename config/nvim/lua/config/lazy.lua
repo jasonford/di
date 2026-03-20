@@ -19,7 +19,7 @@ require("lazy").setup(require("plugins"), {
     lazy = true,
   },
   install = {
-    missing = false,
+    missing = true,
     colorscheme = { "tokyonight" },
   },
   checker = {
