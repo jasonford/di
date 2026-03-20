@@ -145,12 +145,13 @@ assert_aligned_name_columns() {
 
 launch_tmux() {
   mkdir -p "$repo_root" "$home_dir" "$xdg_config_home"
-  mkdir -p "$repo_root/folder"
+  mkdir -p "$repo_root/folder" "$repo_root/stats-folder"
   printf 'alpha\n' >"$repo_root/alpha.txt"
   printf 'beta\n' >"$repo_root/beta.txt"
   printf 'nested\n' >"$repo_root/folder/nested.txt"
+  printf 'seed\n' >"$repo_root/stats-folder/seed.txt"
   git -C "$repo_root" init -q
-  git -C "$repo_root" add alpha.txt beta.txt folder/nested.txt
+  git -C "$repo_root" add alpha.txt beta.txt folder/nested.txt stats-folder/seed.txt
   git -C "$repo_root" -c user.name=Test -c user.email=test@example.com commit -qm init
   printf 'alpha\ndirty\n' >"$repo_root/alpha.txt"
   : >"$selection_output"
@@ -181,6 +182,25 @@ assert_aligned_name_columns 'folder' 'alpha.txt'
 assert_aligned_name_columns 'alpha.txt' 'beta.txt'
 assert_no_trailing_stats 'alpha\.txt'
 assert_no_trailing_stats 'beta\.txt'
+
+for idx in $(seq -w 1 50); do
+  printf 'fresh\n' >"$repo_root/stats-folder/file-$idx.txt"
+done
+if ! wait_for_regex '\+[0-9]+(-[0-9]+)?[[:space:]]+[├└]──[0-9]+ unlisted$'; then
+  fail_with_capture 'broot never rendered a pruning row with git stats for a partially visible directory'
+fi
+if ! wait_for_regex 'stats-folder$'; then
+  fail_with_capture 'broot never kept the stats-folder row visible while pruning hidden children'
+fi
+if ! wait_for_absent_regex '^[[:space:]]*\+[0-9]+(-[0-9]+)?[[:space:]]+[├└]──stats-folder$'; then
+  fail_with_capture 'directory row still duplicated git stats while a pruning row was visible'
+fi
+assert_aligned_name_columns 'stats-folder' 'alpha.txt'
+
+rm -f "$repo_root"/stats-folder/file-*.txt
+if ! wait_for_absent_regex '[0-9]+ unlisted$'; then
+  fail_with_capture 'pruning row did not clear after removing transient files from stats-folder'
+fi
 
 printf 'fresh\n' >"$repo_root/untracked.txt"
 if ! wait_for_regex '\+1[[:space:]]+[├└]──untracked\.txt$'; then
