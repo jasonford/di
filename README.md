@@ -25,7 +25,7 @@ chmod +x run
 - The shared Neovim config lives at `config/nvim/init.lua` and is loaded by plain `nvim` in that middle terminal pane
 - `broot` launches in the upper-left pane as a patched source build, starts in watch mode, and has git file status info enabled by default
 - The bundled `broot` patches make watch mode refresh recursively from the current root, keep broot's repo summary on the root row, and show inline `+/-` counts in a fixed gutter on changed files
-- Selecting a directory in broot syncs the middle tmux shell into that directory by sending a visible `cd` command to the pane
+- Selecting a directory or file in broot syncs the middle tmux shell into that directory or the file's parent directory by sending a visible `cd` command to the pane
 - Press `Enter` or double-click a text file in broot to jump focus to the middle terminal pane; the current broot selection is still written to the shared selection-output file for later automation
 - Broot still receives the shared editor-state file, so the existing gutter integration stays available for the later terminal-driven editing flow
 - `broot` is launched directly with `--confine-root`, so browsing stays pinned to the mounted repo without `proot`

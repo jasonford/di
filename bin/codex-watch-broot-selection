@@ -63,6 +63,21 @@ read_selection() {
   normalize_path "$raw"
 }
 
+selection_target_dir() {
+  local selection_path="$1"
+
+  [ -n "$selection_path" ] || return 0
+
+  if [ -d "$selection_path" ]; then
+    printf '%s\n' "$selection_path"
+    return 0
+  fi
+
+  if [ -e "$selection_path" ]; then
+    normalize_path "$(dirname -- "$selection_path")"
+  fi
+}
+
 sync_terminal_pane() {
   local terminal_pane="$1"
   local target_dir="$2"
@@ -108,9 +123,7 @@ while tmux has-session -t "$session_name" 2>/dev/null; do
   next_dir=""
   selection_path="$(read_selection)"
 
-  if [ -n "$selection_path" ] && [ -d "$selection_path" ]; then
-    next_dir="$(normalize_path "$selection_path")"
-  fi
+  next_dir="$(selection_target_dir "$selection_path")"
 
   if [ "$next_dir" != "$selected_dir" ]; then
     selected_dir="$next_dir"

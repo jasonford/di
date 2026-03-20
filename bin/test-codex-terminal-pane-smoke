@@ -198,8 +198,12 @@ fi
 
 sync_dir="$tmp_dir/dir with spaces"
 sync_file="$sync_dir/note.txt"
+other_dir="$tmp_dir/o"
+other_file="$other_dir/f.md"
 mkdir -p "$sync_dir"
+mkdir -p "$other_dir"
 printf 'note\n' >"$sync_file"
+printf 'note\n' >"$other_file"
 printf '%s\n' "$sync_dir" >"$selection_output"
 
 if ! wait_for_path "$terminal_pane" "$sync_dir"; then
@@ -215,9 +219,19 @@ if ! wait_for_capture_text "$terminal_pane" "$expected_cd"; then
   exit 1
 fi
 
-printf '%s\n' "$sync_file" >"$selection_output"
-sleep 0.3
-assert_equals "$sync_dir" "$(pane_current_path "$terminal_pane")" 'file selection should not change the middle terminal pane path'
+printf '%s\n' "$other_file" >"$selection_output"
+if ! wait_for_path "$terminal_pane" "$other_dir"; then
+  printf 'file selection did not sync the middle terminal pane to the file parent directory\n' >&2
+  capture_pane "$terminal_pane" >&2
+  exit 1
+fi
+
+printf -v expected_file_cd 'cd -- %q' "$other_dir"
+if ! wait_for_capture_text "$terminal_pane" "$expected_file_cd"; then
+  printf 'file selection did not send a visible cd command for the file parent directory\n' >&2
+  capture_pane "$terminal_pane" >&2
+  exit 1
+fi
 
 "${tmux_cmd[@]}" send-keys -t "$terminal_pane" "exit" C-m
 if ! wait_for_dead_state "$terminal_pane" 1; then
@@ -232,8 +246,8 @@ if ! wait_for_dead_state "$terminal_pane" 0; then
   exit 1
 fi
 assert_equals "$terminal_pane" "$(active_pane)" 'terminal focus hook did not select the synced-dir respawned pane'
-if ! wait_for_path "$terminal_pane" "$sync_dir"; then
-  printf 'respawned terminal shell did not restore the last synced directory\n' >&2
+if ! wait_for_path "$terminal_pane" "$other_dir"; then
+  printf 'respawned terminal shell did not restore the last synced file parent directory\n' >&2
   capture_pane "$terminal_pane" >&2
   exit 1
 fi
