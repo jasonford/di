@@ -14,6 +14,7 @@ editor_state_file="$tmp_dir/editor-state.tsv"
 home_dir="$tmp_dir/home"
 xdg_config_home="$tmp_dir/xdg-config"
 last_capture=""
+modified_yellow_fg_regex=$'\033\\[[0-9;]*(33|93|38;5;11)m'
 
 cleanup() {
   "${tmux_cmd[@]}" kill-session -t "$TMUX_SESSION_NAME" >/dev/null 2>&1 || true
@@ -258,8 +259,8 @@ fi
 if ! wait_for_literal '+1-0├─•alpha.txt'; then
   fail_with_capture 'modified editor state did not replace the final branch segment with a bullet'
 fi
-if ! wait_for_regex_escaped $'\033\\[[0-9;]*38;5;9m•'; then
-  fail_with_capture_escaped 'modified editor state bullet was not red'
+if ! wait_for_regex_escaped "${modified_yellow_fg_regex}•"; then
+  fail_with_capture_escaped 'modified editor state bullet was not yellow'
 fi
 assert_aligned_name_columns 'folder' 'alpha.txt'
 assert_aligned_name_columns 'alpha.txt' 'beta.txt'
@@ -299,8 +300,8 @@ sleep 0.2
 if ! wait_for_regex '\+1-0[[:space:]]+[├└]─•folder …$'; then
   fail_with_capture 'collapsed directory did not show a bullet for hidden unsaved edits'
 fi
-if ! wait_for_regex_escaped $'\033\\[[0-9;]*38;5;9m•\033\\[[0-9;]*mfolder …'; then
-  fail_with_capture_escaped 'collapsed directory hidden editor state bullet was not red'
+if ! wait_for_regex_escaped "${modified_yellow_fg_regex}•\033\\[[0-9;]*mfolder …"; then
+  fail_with_capture_escaped 'collapsed directory hidden editor state bullet was not yellow'
 fi
 
 : >"$editor_state_file"
@@ -322,8 +323,8 @@ sleep 0.2
 if ! wait_for_regex '•[0-9]+ unlisted$'; then
   fail_with_capture 'modified hidden editor state did not propagate to the pruning row'
 fi
-if ! wait_for_regex_escaped $'\033\\[[0-9;]*38;5;9m•\033\\[[0-9;]*m[0-9]+ unlisted'; then
-  fail_with_capture_escaped 'modified hidden editor state bullet was not red'
+if ! wait_for_regex_escaped "${modified_yellow_fg_regex}•\033\\[[0-9;]*m[0-9]+ unlisted"; then
+  fail_with_capture_escaped 'modified hidden editor state bullet was not yellow'
 fi
 
 : >"$editor_state_file"

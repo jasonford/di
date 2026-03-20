@@ -28,7 +28,7 @@ chmod +x develop
 - The bundled `broot` patches make watch mode refresh recursively from the current root, keep broot's repo summary on the root row, and show inline `+/-` counts in a fixed gutter on changed files
 - The lower-right pane follows broot's current selection and shows unified git diffs for changed tracked text files, highlighted text previews for normal files, a real minimal Bash shell for directories, and safe fallbacks for binaries and large files
 - Press `Enter` or double-click a text file in broot to open it in a managed Neovim pane on the far right; the layout switches to `1/3 | 1/3 | 1/3`
-- Unsaved Neovim buffers replace the last broot tree connector cell with a red `•`
+- Unsaved Neovim buffers replace the last broot tree connector cell with the same yellow used for other modified-state indicators
 - The Neovim pane is reused for later selections, only shows one visible buffer at a time, and disappears automatically when the last file buffer is closed
 - `broot` is launched directly with `--confine-root`, so browsing stays pinned to the mounted repo without `proot`
 
