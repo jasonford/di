@@ -130,6 +130,28 @@ wait_for_capture_text() {
   printf '%s' "$capture" | grep -Fq "$expected"
 }
 
+relative_cd_path() {
+  local current_dir="$1"
+  local target_dir="$2"
+  local relative_path=""
+
+  relative_path="$(realpath --relative-to="$current_dir" -- "$target_dir" 2>/dev/null || true)"
+  if [ -z "$relative_path" ]; then
+    relative_path="$target_dir"
+  fi
+
+  case "$relative_path" in
+    "")
+      relative_path="."
+      ;;
+    -*)
+      relative_path="./$relative_path"
+      ;;
+  esac
+
+  printf '%s\n' "$relative_path"
+}
+
 require_command tmux
 
 "${tmux_cmd[@]}" new-session -d -s "$TMUX_SESSION_NAME" -x 160 -y 24
@@ -212,7 +234,7 @@ if ! wait_for_path "$terminal_pane" "$sync_dir"; then
   exit 1
 fi
 
-printf -v expected_cd 'cd -- %q' "$sync_dir"
+printf -v expected_cd 'cd %q' "$(relative_cd_path "$SCRIPT_ROOT" "$sync_dir")"
 if ! wait_for_capture_text "$terminal_pane" "$expected_cd"; then
   printf 'directory selection did not send a visible cd command into the middle terminal pane\n' >&2
   capture_pane "$terminal_pane" >&2
@@ -226,7 +248,7 @@ if ! wait_for_path "$terminal_pane" "$other_dir"; then
   exit 1
 fi
 
-printf -v expected_file_cd 'cd -- %q' "$other_dir"
+printf -v expected_file_cd 'cd %q' "$(relative_cd_path "$sync_dir" "$other_dir")"
 if ! wait_for_capture_text "$terminal_pane" "$expected_file_cd"; then
   printf 'file selection did not send a visible cd command for the file parent directory\n' >&2
   capture_pane "$terminal_pane" >&2
