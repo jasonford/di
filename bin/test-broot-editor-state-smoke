@@ -258,8 +258,8 @@ fi
 if ! wait_for_literal '+1-0├─•alpha.txt'; then
   fail_with_capture 'modified editor state did not replace the final branch segment with a bullet'
 fi
-if ! wait_for_regex_escaped $'\033\\[[0-9;]*38;5;11m•'; then
-  fail_with_capture_escaped 'modified editor state bullet was not yellow'
+if ! wait_for_regex_escaped $'\033\\[[0-9;]*38;5;9m•'; then
+  fail_with_capture_escaped 'modified editor state bullet was not red'
 fi
 assert_aligned_name_columns 'folder' 'alpha.txt'
 assert_aligned_name_columns 'alpha.txt' 'beta.txt'
@@ -294,6 +294,20 @@ fi
 assert_aligned_name_columns 'alpha.txt' 'folder'
 assert_no_trailing_stats 'folder'
 
+printf '1\t%s\n' "$repo_root/folder/nested.txt" >"$editor_state_file"
+sleep 0.2
+if ! wait_for_regex '\+1-0[[:space:]]+[├└]─•folder …$'; then
+  fail_with_capture 'collapsed directory did not show a bullet for hidden unsaved edits'
+fi
+if ! wait_for_regex_escaped $'\033\\[[0-9;]*38;5;9m•\033\\[[0-9;]*mfolder …'; then
+  fail_with_capture_escaped 'collapsed directory hidden editor state bullet was not red'
+fi
+
+: >"$editor_state_file"
+if ! wait_for_regex '\+1-0[[:space:]]+[├└]──folder …$'; then
+  fail_with_capture 'collapsed directory editor marker did not clear when the state file was emptied'
+fi
+
 for idx in $(seq -w 1 30); do
   mkdir -p "$repo_root/pruned-$idx"
   printf 'nested\n' >"$repo_root/pruned-$idx/nested.txt"
@@ -308,8 +322,8 @@ sleep 0.2
 if ! wait_for_regex '•[0-9]+ unlisted$'; then
   fail_with_capture 'modified hidden editor state did not propagate to the pruning row'
 fi
-if ! wait_for_regex_escaped $'\033\\[[0-9;]*38;5;11m•\033\\[[0-9;]*m[0-9]+ unlisted'; then
-  fail_with_capture_escaped 'modified hidden editor state bullet was not yellow'
+if ! wait_for_regex_escaped $'\033\\[[0-9;]*38;5;9m•\033\\[[0-9;]*m[0-9]+ unlisted'; then
+  fail_with_capture_escaped 'modified hidden editor state bullet was not red'
 fi
 
 : >"$editor_state_file"

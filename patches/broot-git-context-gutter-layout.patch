@@ -174,7 +174,7 @@ index aadee06..a6db6f3 100644
 +            return None;
 +        }
 +        let mut style = self.skin.git_status_modified.clone();
-+        style.object_style.foreground_color = Some(crokey::crossterm::style::Color::Yellow);
++        style.object_style.foreground_color = Some(crokey::crossterm::style::Color::Red);
 +        if selected {
 +            if let Some(c) = self.skin.selected_line.get_bg() {
 +                style.set_bg(c);
@@ -453,7 +453,7 @@ index aadee06..a6db6f3 100644
 +    }
 +
 +    #[test]
-+    fn modified_editor_state_colors_open_segment_bullet_yellow() {
++    fn modified_editor_state_colors_open_segment_bullet_red() {
 +        let tree = test_tree_with_context_mark(ContextGutterMark::EditorModified);
 +        let skin = StyleMaps::create(&FxHashMap::default()).focused;
 +        let ext_colors = ExtColorMap::default();
@@ -465,7 +465,7 @@ index aadee06..a6db6f3 100644
 +
 +        assert_eq!(
 +            style.object_style.foreground_color,
-+            Some(Color::Yellow),
++            Some(Color::Red),
 +        );
 +    }
 +
@@ -767,7 +767,7 @@ index 88c939c..d6f7033 100644
          errors::TreeBuildError,
          file_sum::FileSum,
          git::TreeGitStatus,
-@@ -210,6 +211,33 @@ impl Tree {
+@@ -210,6 +211,52 @@ impl Tree {
          }
      }
  
@@ -779,8 +779,27 @@ index 88c939c..d6f7033 100644
 +                unlisted_context_mark_by_id.insert(line.id, unlisted_context_mark);
 +            }
 +        }
++        let visible_pruning_parent_ids: Vec<TreeLineId> = self
++            .lines
++            .iter()
++            .filter_map(|line| {
++                matches!(line.line_type, TreeLineType::Pruning)
++                    .then_some(line.parent_id)
++                    .flatten()
++            })
++            .collect();
 +        for line in &mut self.lines {
 +            if !matches!(line.line_type, TreeLineType::Pruning) {
++                if let Some(unlisted_context_mark) = unlisted_context_mark_by_id.get(&line.id).copied()
++                {
++                    if !visible_pruning_parent_ids.contains(&line.id) {
++                        line.context_mark = Some(
++                            line.context_mark.map_or(unlisted_context_mark, |context_mark| {
++                                context_mark.merged(unlisted_context_mark)
++                            }),
++                        );
++                    }
++                }
 +                continue;
 +            }
 +            let Some(parent_id) = line.parent_id else {
@@ -817,7 +836,7 @@ index 88c939c..d6f7033 100644
              git::TreeGitStatus,
              task_sync::{
                  ComputationResult,
-@@ -805,6 +835,43 @@ mod tests {
+@@ -805,6 +835,78 @@ mod tests {
          assert_eq!(diff_stats.deletions, 0);
      }
  
@@ -854,6 +873,41 @@ index 88c939c..d6f7033 100644
 +        assert_eq!(pruning_line.unlisted, 4);
 +        assert_eq!(
 +            pruning_line.context_mark,
++            Some(ContextGutterMark::EditorModified),
++        );
++    }
++
++    #[test]
++    fn collapsed_directory_aggregates_editor_state_for_hidden_entries() {
++        let tmp_dir = tempfile::tempdir().unwrap();
++        let repo_root = tmp_dir.path().to_path_buf();
++        let collapsed_dir = repo_root.join("collapsed");
++        let tracked_path = collapsed_dir.join("tracked.txt");
++        let editor_state_path = repo_root.join("editor-state.tsv");
++
++        fs::create_dir_all(&collapsed_dir).unwrap();
++        fs::write(&tracked_path, "a\n").unwrap();
++        fs::write(
++            &editor_state_path,
++            format!("1\t{}\n", tracked_path.display()),
++        )
++        .unwrap();
++
++        let mut con = AppContext::default();
++        con.launch_args.editor_state_file = Some(editor_state_path);
++        let tree = build_tree_with_targeted_size(&repo_root, &con, 10);
++        let collapsed_line = tree
++            .lines
++            .iter()
++            .find(|line| line.path == collapsed_dir)
++            .unwrap();
++
++        assert!(tree
++            .lines
++            .iter()
++            .all(|line| !matches!(line.line_type, TreeLineType::Pruning)));
++        assert_eq!(
++            collapsed_line.context_mark,
 +            Some(ContextGutterMark::EditorModified),
 +        );
 +    }
