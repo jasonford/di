@@ -43,6 +43,10 @@ capture_pane() {
   last_capture="$("${tmux_cmd[@]}" capture-pane -p -t "$TMUX_SESSION_NAME:0.0" -S -200 2>/dev/null || true)"
 }
 
+capture_pane_escaped() {
+  last_capture="$("${tmux_cmd[@]}" capture-pane -e -p -t "$TMUX_SESSION_NAME:0.0" -S -200 2>/dev/null || true)"
+}
+
 assert_no_trailing_stats() {
   local file_regex="$1"
 
@@ -84,6 +88,23 @@ wait_for_regex() {
   printf '%s\n' "$last_capture" | grep -Eq "$expected_regex"
 }
 
+wait_for_regex_escaped() {
+  local expected_regex="$1"
+  local deadline=$((SECONDS + 10))
+  while (( SECONDS < deadline )); do
+    capture_pane_escaped
+    if printf '%s\n' "$last_capture" | grep -Eq "$expected_regex"; then
+      return 0
+    fi
+    if [ "$(pane_dead)" = "1" ]; then
+      return 1
+    fi
+    sleep 0.1
+  done
+  capture_pane_escaped
+  printf '%s\n' "$last_capture" | grep -Eq "$expected_regex"
+}
+
 wait_for_absent_regex() {
   local expected_regex="$1"
   local deadline=$((SECONDS + 10))
@@ -121,6 +142,14 @@ wait_for_literal() {
 fail_with_capture() {
   local message="$1"
   capture_pane
+  printf '%s\n' "$message" >&2
+  printf '%s\n' "$last_capture" >&2
+  exit 1
+}
+
+fail_with_capture_escaped() {
+  local message="$1"
+  capture_pane_escaped
   printf '%s\n' "$message" >&2
   printf '%s\n' "$last_capture" >&2
   exit 1
@@ -229,6 +258,9 @@ fi
 if ! wait_for_literal '+1-0├─•alpha.txt'; then
   fail_with_capture 'modified editor state did not replace the final branch segment with a bullet'
 fi
+if ! wait_for_regex_escaped $'\033\\[[0-9;]*38;5;11m•'; then
+  fail_with_capture_escaped 'modified editor state bullet was not yellow'
+fi
 assert_aligned_name_columns 'folder' 'alpha.txt'
 assert_aligned_name_columns 'alpha.txt' 'beta.txt'
 assert_no_trailing_stats 'alpha\.txt'
@@ -275,6 +307,9 @@ printf '1\t%s\n' "$repo_root/pruned-30/nested.txt" >"$editor_state_file"
 sleep 0.2
 if ! wait_for_regex '•[0-9]+ unlisted$'; then
   fail_with_capture 'modified hidden editor state did not propagate to the pruning row'
+fi
+if ! wait_for_regex_escaped $'\033\\[[0-9;]*38;5;11m•\033\\[[0-9;]*m[0-9]+ unlisted'; then
+  fail_with_capture_escaped 'modified hidden editor state bullet was not yellow'
 fi
 
 : >"$editor_state_file"

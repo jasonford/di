@@ -1,5 +1,3 @@
-- don't show tabs in neovim
-
 - update unsaved edit marker in broot to a yellow bullet.
 
 - remove preview panel and all complicating code. Instead, have the right panel show files opned in neovim.
