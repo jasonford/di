@@ -69,7 +69,7 @@ if ! pane_live "$terminal_pane"; then
 fi
 
 window_width="$(tmux display-message -p -t "$codex_pane" '#{window_width}')"
-fixed_side_width=48
+fixed_side_width=56
 side_width="$(clamp_width "$fixed_side_width" "$(( (window_width - 3) / 2 ))")"
 
 tmux resize-pane -t "$broot_pane" -x "$side_width" >/dev/null 2>&1 || true

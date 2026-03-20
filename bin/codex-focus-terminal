@@ -14,6 +14,15 @@ tmux_option() {
   tmux show-options -qv -t "$session_name" "$1" 2>/dev/null || true
 }
 
+clear_prefill_options() {
+  tmux set-option -q -t "$session_name" @codex_terminal_prefilled_selection "" >/dev/null 2>&1 || true
+  tmux set-option -q -t "$session_name" @codex_terminal_prefilled_command "" >/dev/null 2>&1 || true
+}
+
+set_activated_selection() {
+  tmux set-option -q -t "$session_name" @codex_terminal_activated_selection "$1" >/dev/null 2>&1 || true
+}
+
 normalize_path() {
   local path="$1"
   [ -n "$path" ] || return 0
@@ -246,12 +255,21 @@ if [ -n "$selection_path" ] && [ -f "$selection_path" ]; then
   if is_shell_command "$current_command" || wait_for_shell "$terminal_pane"; then
     wait_for_path_sync "$terminal_pane" "$selected_dir" || true
     if [ "$prefilled_selection" = "$selection_path" ] && [ -n "$prefilled_command" ] && [ "$prefilled_command" = "$expected_open_command" ] && pane_contains_text "$terminal_pane" "$prefilled_command"; then
-      submit_prefilled_open_command "$terminal_pane" || true
+      if submit_prefilled_open_command "$terminal_pane"; then
+        set_activated_selection "$selection_path"
+        clear_prefill_options
+      fi
     else
-      send_shell_open_command "$terminal_pane" "$selection_path" || true
+      if send_shell_open_command "$terminal_pane" "$selection_path"; then
+        set_activated_selection "$selection_path"
+        clear_prefill_options
+      fi
     fi
   elif is_vim_command "$current_command"; then
-    send_vim_drop_keys "$terminal_pane" "$selection_path" || true
+    if send_vim_drop_keys "$terminal_pane" "$selection_path"; then
+      set_activated_selection "$selection_path"
+      clear_prefill_options
+    fi
   fi
 fi
 

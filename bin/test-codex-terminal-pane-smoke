@@ -70,6 +70,10 @@ pane_current_path() {
   "${tmux_cmd[@]}" display-message -p -t "$1" '#{pane_current_path}'
 }
 
+pane_current_command() {
+  "${tmux_cmd[@]}" display-message -p -t "$1" '#{pane_current_command}'
+}
+
 window_width() {
   "${tmux_cmd[@]}" display-message -p -t "$1" '#{window_width}'
 }
@@ -150,13 +154,13 @@ wait_for_command() {
   local deadline=$((SECONDS + 10))
 
   while (( SECONDS < deadline )); do
-    if [ "$(tmux display-message -p -t "$pane_id" '#{pane_current_command}')" = "$expected" ]; then
+    if [ "$(pane_current_command "$pane_id")" = "$expected" ]; then
       return 0
     fi
     sleep 0.1
   done
 
-  [ "$(tmux display-message -p -t "$pane_id" '#{pane_current_command}')" = "$expected" ]
+  [ "$(pane_current_command "$pane_id")" = "$expected" ]
 }
 
 relative_cd_path() {
@@ -217,11 +221,11 @@ if ! wait_for_prompt "$terminal_pane" "$SCRIPT_ROOT >"; then
   exit 1
 fi
 
-side_width=48
+side_width=56
 middle_width="$(( $(window_width "$codex_pane") - side_width - side_width - 2 ))"
-assert_equals "$side_width" "$(pane_width "$broot_pane")" 'three-column layout did not keep the broot pane at 48 columns'
+assert_equals "$side_width" "$(pane_width "$broot_pane")" 'three-column layout did not keep the broot pane at 56 columns'
 assert_equals "$middle_width" "$(pane_width "$terminal_pane")" 'three-column layout did not leave the terminal pane as the remaining width'
-assert_equals "$side_width" "$(pane_width "$codex_pane")" 'three-column layout did not keep the codex pane at 48 columns'
+assert_equals "$side_width" "$(pane_width "$codex_pane")" 'three-column layout did not keep the codex pane at 56 columns'
 
 if [ "$(pane_left "$broot_pane")" -ge "$(pane_left "$terminal_pane")" ]; then
   printf 'startup should place the broot pane to the left of the terminal pane\n' >&2
@@ -334,6 +338,15 @@ assert_equals "$terminal_pane" "$(active_pane)" 'reopening a file did not focus 
 "${tmux_cmd[@]}" send-keys -t "$terminal_pane" Escape ":qa!" Enter
 if ! wait_for_command "$terminal_pane" "bash"; then
   printf 'Neovim never returned control to the shell for exit verification\n' >&2
+  capture_pane "$terminal_pane" >&2
+  exit 1
+fi
+
+sleep 0.5
+"${tmux_cmd[@]}" send-keys -t "$terminal_pane" C-m
+sleep 0.3
+if [ "$(pane_current_command "$terminal_pane")" != "bash" ]; then
+  printf 'exiting Neovim left a queued nvim command on the shell prompt\n' >&2
   capture_pane "$terminal_pane" >&2
   exit 1
 fi

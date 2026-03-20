@@ -17,7 +17,7 @@ chmod +x run
 ## Workflow
 
 - Start in a full Codex session with `./run`
-- Startup layout is `broot | terminal | codex`, with broot and Codex fixed at 48 columns and the middle tmux shell taking the remaining width
+- Startup layout is `broot | terminal | codex`, with broot and Codex fixed at 56 columns and the middle tmux shell taking the remaining width
 - Codex starts in inline mode by default (`--no-alt-screen`) so tmux pane scrollback and redraw are more reliable
 - You can tell Codex what to edit in plain language, for example `edit README.md`, `fix the Docker launcher`, or `change the Neovim config to ...`. Codex should infer the relevant file(s) from repo context and proceed unless the target is genuinely ambiguous.
 - Open files with plain `nvim` inside the container

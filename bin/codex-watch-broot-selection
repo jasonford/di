@@ -36,6 +36,10 @@ clear_prefill_options() {
   tmux set-option -q -t "$session_name" @codex_terminal_prefilled_command "" >/dev/null 2>&1 || true
 }
 
+clear_activated_selection() {
+  tmux set-option -q -t "$session_name" @codex_terminal_activated_selection "" >/dev/null 2>&1 || true
+}
+
 set_prefill_options() {
   tmux set-option -q -t "$session_name" @codex_terminal_prefilled_selection "$1" >/dev/null 2>&1 || true
   tmux set-option -q -t "$session_name" @codex_terminal_prefilled_command "$2" >/dev/null 2>&1 || true
@@ -244,6 +248,7 @@ while tmux has-session -t "$session_name" 2>/dev/null; do
   next_dir=""
   next_file=""
   desired_open_command=""
+  activated_selection="$(normalize_path "$(tmux_option @codex_terminal_activated_selection)")"
   selection_path="$(read_selection)"
 
   next_dir="$(selection_target_dir "$selection_path")"
@@ -253,6 +258,10 @@ while tmux has-session -t "$session_name" 2>/dev/null; do
   fi
 
   if [ "$next_dir" != "$selected_dir" ] || [ "$next_file" != "$selected_file" ]; then
+    if [ "$next_file" != "$activated_selection" ]; then
+      clear_activated_selection
+      activated_selection=""
+    fi
     selected_dir="$next_dir"
     selected_file="$next_file"
     applied_dir=""
@@ -283,7 +292,10 @@ while tmux has-session -t "$session_name" 2>/dev/null; do
     applied_dir=""
   fi
 
-  if [ -n "$desired_open_command" ] && [ "$applied_dir" = "$selected_dir" ] && [ "$applied_open_command" != "$desired_open_command" ]; then
+  if [ -n "$desired_open_command" ] && [ "$selected_file" = "$activated_selection" ]; then
+    applied_open_command=""
+    clear_prefill_options
+  elif [ -n "$desired_open_command" ] && [ "$applied_dir" = "$selected_dir" ] && [ "$applied_open_command" != "$desired_open_command" ]; then
     applied_open_command="$(prefill_terminal_open_command "$terminal_pane" "$selected_dir" "$selected_file" || true)"
     if [ -n "$applied_open_command" ]; then
       set_prefill_options "$selected_file" "$applied_open_command"
