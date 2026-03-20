@@ -1,5 +1,6 @@
 local uv = vim.uv or vim.loop
 local state_file = vim.env.CODEX_NVIM_STATE_FILE
+local initial_mode = vim.env.CODEX_NVIM_INITIAL_MODE or ""
 local closing = false
 local next_open_seq = 0
 
@@ -8,6 +9,10 @@ local function ensure_parent_dir(path)
   if parent ~= nil and parent ~= "" then
     vim.fn.mkdir(parent, "p")
   end
+end
+
+local function absolute_path(path)
+  return vim.fn.fnamemodify(path, ":p")
 end
 
 local function is_managed_buffer(buf)
@@ -49,6 +54,25 @@ local function mark_buffer_opened(buf)
   end
   next_open_seq = next_open_seq + 1
   vim.b[buf].codex_managed_open_seq = next_open_seq
+end
+
+local function is_preview_buffer(buf)
+  return is_managed_buffer(buf) and vim.b[buf].codex_managed_preview == 1
+end
+
+local function set_preview_buffer(buf, preview)
+  if not is_managed_buffer(buf) then
+    return
+  end
+  vim.b[buf].codex_managed_preview = preview and 1 or nil
+end
+
+local function listed_buffer_for_path(path)
+  local buf = vim.fn.bufnr(path)
+  if buf == -1 or not vim.api.nvim_buf_is_valid(buf) or vim.fn.buflisted(buf) ~= 1 then
+    return nil
+  end
+  return buf
 end
 
 local function newest_other_buffer(current)
@@ -148,8 +172,47 @@ local function managed_write_quit(force, always_write)
 end
 
 function _G.CodexManagedOpen(path)
-  vim.cmd("drop " .. vim.fn.fnameescape(vim.fn.fnamemodify(path, ":p")))
-  mark_buffer_opened(vim.api.nvim_get_current_buf())
+  local target_path = absolute_path(path)
+  local previous = vim.api.nvim_get_current_buf()
+  local previous_is_reusable_preview = is_preview_buffer(previous)
+    and not vim.bo[previous].modified
+    and absolute_path(vim.api.nvim_buf_get_name(previous)) ~= target_path
+
+  vim.cmd("drop " .. vim.fn.fnameescape(target_path))
+
+  local current = vim.api.nvim_get_current_buf()
+  set_preview_buffer(current, false)
+  mark_buffer_opened(current)
+
+  if previous_is_reusable_preview and previous ~= current then
+    pcall(vim.api.nvim_buf_delete, previous, { force = false })
+  end
+
+  vim.schedule(refresh)
+  return 1
+end
+
+function _G.CodexManagedPreview(path)
+  local target_path = absolute_path(path)
+  local previous = vim.api.nvim_get_current_buf()
+  local existing = listed_buffer_for_path(target_path)
+  local existing_is_preview = existing ~= nil and is_preview_buffer(existing)
+  local previous_is_reusable_preview = is_preview_buffer(previous)
+    and not vim.bo[previous].modified
+    and absolute_path(vim.api.nvim_buf_get_name(previous)) ~= target_path
+
+  vim.cmd("drop " .. vim.fn.fnameescape(target_path))
+
+  local current = vim.api.nvim_get_current_buf()
+  if existing == nil or existing_is_preview then
+    set_preview_buffer(current, true)
+  end
+  mark_buffer_opened(current)
+
+  if previous_is_reusable_preview and previous ~= current then
+    pcall(vim.api.nvim_buf_delete, previous, { force = false })
+  end
+
   vim.schedule(refresh)
   return 1
 end
@@ -204,6 +267,9 @@ vim.api.nvim_create_autocmd({
 }, {
   callback = function(args)
     if args.event == "VimEnter" then
+      if initial_mode == "preview" then
+        set_preview_buffer(vim.api.nvim_get_current_buf(), true)
+      end
       mark_buffer_opened(vim.api.nvim_get_current_buf())
     end
     vim.schedule(refresh)

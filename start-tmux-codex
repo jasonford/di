@@ -74,6 +74,10 @@ if ! "${tmux_cmd[@]}" has-session -t "$SESSION_NAME" 2>/dev/null; then
   "${tmux_cmd[@]}" set-option -t "$SESSION_NAME" @codex_nvim_state_file "$editor_state_file"
   broot_pane="$("${tmux_cmd[@]}" split-window -h -b -P -F '#{pane_id}' -t "$window_id" -c "$WORKDIR" "${broot_cmd[@]}")"
   "${tmux_cmd[@]}" set-option -t "$SESSION_NAME" @broot_pane_id "$broot_pane"
+  printf -v preview_shell 'bash %q %q >/dev/null 2>&1' \
+    "$SCRIPT_ROOT/bin/codex-watch-broot-selection-preview" \
+    "$SESSION_NAME"
+  "${tmux_cmd[@]}" run-shell -b "$preview_shell"
   printf -v nvim_prewarm_shell 'bash %q %q >/dev/null 2>&1' \
     "$SCRIPT_ROOT/bin/codex-nvim-prewarm" \
     "$SESSION_NAME"

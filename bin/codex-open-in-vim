@@ -8,6 +8,12 @@ if [ -z "${TMUX_PANE:-}" ]; then
   exit 1
 fi
 
+open_mode="open"
+if [ "${1:-}" = "--preview" ]; then
+  open_mode="preview"
+  shift
+fi
+
 session_name="$(tmux display-message -p -t "$TMUX_PANE" '#S')"
 
 tmux_option() {
@@ -20,11 +26,45 @@ pane_live() {
   [ "$(tmux display-message -p -t "$pane_id" '#{pane_dead}' 2>/dev/null || printf '1')" = "0" ]
 }
 
+clamp_width() {
+  local desired="$1"
+  local maximum="$2"
+
+  if [ "$maximum" -lt 1 ]; then
+    printf '1\n'
+    return 0
+  fi
+  if [ "$desired" -gt "$maximum" ]; then
+    printf '%s\n' "$maximum"
+    return 0
+  fi
+  printf '%s\n' "$desired"
+}
+
 socket_live() {
   local socket_path="$1"
   [ -n "$socket_path" ] || return 1
   [ -S "$socket_path" ] || return 1
   nvim --server "$socket_path" --remote-expr '1' </dev/null >/dev/null 2>&1
+}
+
+set_pending_open() {
+  local path="$1"
+  local mode="$2"
+  local current_mode
+
+  current_mode="$(tmux_option @codex_nvim_pending_mode)"
+  if [ "$mode" = "preview" ] && [ "$current_mode" = "open" ]; then
+    return 0
+  fi
+
+  tmux set-option -t "$session_name" @codex_nvim_pending_path "$path"
+  tmux set-option -t "$session_name" @codex_nvim_pending_mode "$mode"
+}
+
+clear_pending_open() {
+  tmux set-option -qu -t "$session_name" @codex_nvim_pending_path
+  tmux set-option -qu -t "$session_name" @codex_nvim_pending_mode
 }
 
 selection_file="$(tmux_option @broot_selection_output)"
@@ -53,10 +93,23 @@ case "$selected_path" in
 esac
 
 if pane_live "$nvim_pane" && socket_live "$socket_path"; then
+  clear_pending_open
   selected_path_vimscript="${selected_path//\'/\'\'}"
-  nvim --server "$socket_path" --remote-expr "luaeval('CodexManagedOpen(_A)', '$selected_path_vimscript')" </dev/null >/dev/null 2>&1
+  if [ "$open_mode" = "preview" ]; then
+    remote_expr="luaeval('CodexManagedPreview(_A)', '$selected_path_vimscript')"
+  else
+    remote_expr="luaeval('CodexManagedOpen(_A)', '$selected_path_vimscript')"
+  fi
+  nvim --server "$socket_path" --remote-expr "$remote_expr" </dev/null >/dev/null 2>&1
   "$script_root/bin/codex-layout" three-column "$session_name"
-  tmux select-pane -t "$nvim_pane"
+  if [ "$open_mode" = "open" ]; then
+    tmux select-pane -t "$nvim_pane"
+  fi
+  exit 0
+fi
+
+if pane_live "$nvim_pane"; then
+  set_pending_open "$selected_path" "$open_mode"
   exit 0
 fi
 
@@ -64,6 +117,7 @@ if [ -n "$state_file" ]; then
   : >"$state_file"
 fi
 rm -f "$socket_path"
+clear_pending_open
 tmux set-option -qu -t "$session_name" @codex_nvim_pane_id
 if pane_live "$nvim_pane"; then
   tmux kill-pane -t "$nvim_pane" >/dev/null 2>&1 || true
@@ -75,12 +129,15 @@ if ! pane_live "$layout_target"; then
   layout_target="$window_target"
 fi
 window_width="$(tmux display-message -p -t "$window_target" '#{window_width}')"
-side_width="$(( (window_width - 2) / 3 ))"
+fixed_side_width=48
+side_width="$(clamp_width "$fixed_side_width" "$(( (window_width - 3) / 2 ))")"
+middle_width="$(( window_width - side_width - side_width - 2 ))"
 nvim_pane="$(
-  tmux split-window -d -h -l "$side_width" -P -F '#{pane_id}' \
+  tmux split-window -d -h -l "$middle_width" -P -F '#{pane_id}' \
     -t "$layout_target" \
     -c "$workspace_dir" \
     -e CODEX_NVIM_INITIAL_PATH="$selected_path" \
+    -e CODEX_NVIM_INITIAL_MODE="$open_mode" \
     -e CODEX_TMUX_SESSION="$session_name" \
     "bash \"$script_root/bin/codex-nvim-pane\""
 )"
@@ -91,6 +148,7 @@ fi
 if pane_live "$codex_pane"; then
   tmux resize-pane -t "$codex_pane" -x "$side_width" >/dev/null 2>&1 || true
 fi
+set_pending_open "$selected_path" "$open_mode"
 printf -v focus_cmd 'bash %q %q %q %q' \
   "$script_root/bin/codex-nvim-focus-when-ready" \
   "$session_name" \
