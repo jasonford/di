@@ -33,6 +33,7 @@ socket_path="$(tmux_option @codex_nvim_socket)"
 state_file="$(tmux_option @codex_nvim_state_file)"
 nvim_pane="$(tmux_option @codex_nvim_pane_id)"
 codex_pane="$(tmux_option @codex_pane_id)"
+broot_pane="$(tmux_option @broot_pane_id)"
 window_id="$(tmux_option @codex_window_id)"
 
 selected_path="${1:-}"
@@ -69,17 +70,24 @@ if pane_live "$nvim_pane"; then
 fi
 
 window_target="${window_id:-$codex_pane}"
+layout_target="$broot_pane"
+if ! pane_live "$layout_target"; then
+  layout_target="$window_target"
+fi
 window_width="$(tmux display-message -p -t "$window_target" '#{window_width}')"
 side_width="$(( (window_width - 2) / 3 ))"
 nvim_pane="$(
-  tmux split-window -d -h -f -l "$side_width" -P -F '#{pane_id}' \
-    -t "$window_target" \
+  tmux split-window -d -h -l "$side_width" -P -F '#{pane_id}' \
+    -t "$layout_target" \
     -c "$workspace_dir" \
     -e CODEX_NVIM_INITIAL_PATH="$selected_path" \
     -e CODEX_TMUX_SESSION="$session_name" \
     "bash \"$script_root/bin/codex-nvim-pane\""
 )"
 tmux set-option -t "$session_name" @codex_nvim_pane_id "$nvim_pane"
+if pane_live "$broot_pane"; then
+  tmux resize-pane -t "$broot_pane" -x "$side_width" >/dev/null 2>&1 || true
+fi
 if pane_live "$codex_pane"; then
   tmux resize-pane -t "$codex_pane" -x "$side_width" >/dev/null 2>&1 || true
 fi

@@ -47,6 +47,10 @@ pane_width() {
   "${tmux_cmd[@]}" display-message -p -t "$1" '#{pane_width}'
 }
 
+pane_left() {
+  "${tmux_cmd[@]}" display-message -p -t "$1" '#{pane_left}'
+}
+
 pane_count() {
   "${tmux_cmd[@]}" list-panes -t "$(window_target)" -F '#{pane_id}' | wc -l | tr -d '[:space:]'
 }
@@ -157,6 +161,16 @@ assert_width() {
   assert_equals "$expected" "$(pane_width "$pane_id")" "$message"
 }
 
+assert_less_than() {
+  local lhs="$1"
+  local rhs="$2"
+  local message="$3"
+  if [ "$lhs" -ge "$rhs" ]; then
+    printf '%s\nleft:  %s\nright: %s\n' "$message" "$lhs" "$rhs" >&2
+    exit 1
+  fi
+}
+
 setup_nvim_wrapper() {
   mkdir -p "$nvim_wrapper_dir"
   cat >"$nvim_wrapper_dir/nvim" <<EOF
@@ -203,7 +217,7 @@ EOF
   "${tmux_cmd[@]}" rename-window -t "$window_id" "$window_name"
   "${tmux_cmd[@]}" set-environment -t "$TMUX_SESSION_NAME" PATH "$test_path"
   codex_pane="$("${tmux_cmd[@]}" display-message -p -t "$window_id" '#{pane_id}')"
-  broot_pane="$("${tmux_cmd[@]}" split-window -d -h -P -F '#{pane_id}' -t "$codex_pane" 'bash')"
+  broot_pane="$("${tmux_cmd[@]}" split-window -d -h -b -P -F '#{pane_id}' -t "$codex_pane" 'bash')"
 
   "${tmux_cmd[@]}" set-option -t "$TMUX_SESSION_NAME" @codex_repo_name "$window_name"
   "${tmux_cmd[@]}" set-option -t "$TMUX_SESSION_NAME" @codex_window_id "$window_id"
@@ -227,9 +241,10 @@ export PATH="$test_path"
 launch_tmux
 "${tmux_cmd[@]}" select-pane -t "$broot_pane"
 assert_equals "2" "$(pane_count)" 'startup should only create codex and broot panes'
-two_column_left="$(( ($(window_width "$codex_pane") - 1) / 3 ))"
-assert_width "$two_column_left" "$codex_pane" 'two-column layout did not size the codex pane to one third'
-assert_width "$(( $(window_width "$codex_pane") - two_column_left - 1 ))" "$broot_pane" 'two-column layout did not size the broot pane to two thirds'
+two_column_side="$(( ($(window_width "$codex_pane") - 1) / 3 ))"
+assert_width "$two_column_side" "$codex_pane" 'two-column layout did not size the codex pane to one third'
+assert_width "$(( $(window_width "$codex_pane") - two_column_side - 1 ))" "$broot_pane" 'two-column layout did not size the broot pane to two thirds'
+assert_less_than "$(pane_left "$broot_pane")" "$(pane_left "$codex_pane")" 'startup should place the broot pane to the left of Codex'
 
 TMUX_PANE="$broot_pane" "$SCRIPT_ROOT/bin/codex-open-in-vim" "$repo_root/one.txt"
 editor_pane="$("${tmux_cmd[@]}" show-options -qv -t "$TMUX_SESSION_NAME" @codex_nvim_pane_id)"
@@ -261,9 +276,11 @@ assert_equals "3" "$(pane_count)" 'opening a file should add a single Neovim pan
 
 three_column_side="$(( ($(window_width "$codex_pane") - 2) / 3 ))"
 three_column_middle="$(( $(window_width "$codex_pane") - three_column_side - three_column_side - 2 ))"
+assert_width "$three_column_side" "$broot_pane" 'three-column layout did not keep the broot pane at one third'
+assert_width "$three_column_middle" "$editor_pane" 'three-column layout did not keep the editor pane in the middle third'
 assert_width "$three_column_side" "$codex_pane" 'three-column layout did not keep the codex pane at one third'
-assert_width "$three_column_middle" "$broot_pane" 'three-column layout did not resize the broot pane to the middle third'
-assert_width "$three_column_side" "$editor_pane" 'three-column layout did not size the editor pane to one third'
+assert_less_than "$(pane_left "$broot_pane")" "$(pane_left "$editor_pane")" 'editor pane should open to the right of broot'
+assert_less_than "$(pane_left "$editor_pane")" "$(pane_left "$codex_pane")" 'editor pane should open to the left of Codex'
 
 assert_equals "$repo_root/one.txt" "$(nvim --server "$socket_path" --remote-expr 'expand("%:p")')" 'first open did not select the requested buffer'
 if ! wait_for_regex_in_file "$state_file" "^0[[:space:]]+$repo_root/one\\.txt$"; then
@@ -347,9 +364,10 @@ if ! wait_for_empty_file "$state_file"; then
 fi
 assert_equals "2" "$(pane_count)" 'quitting the last file should restore the two-pane layout'
 
-restored_left="$(( ($(window_width "$codex_pane") - 1) / 3 ))"
-assert_width "$restored_left" "$codex_pane" 'teardown did not restore the codex pane width'
-assert_width "$(( $(window_width "$codex_pane") - restored_left - 1 ))" "$broot_pane" 'teardown did not restore the broot pane width'
+restored_side="$(( ($(window_width "$codex_pane") - 1) / 3 ))"
+assert_width "$restored_side" "$codex_pane" 'teardown did not restore the codex pane width'
+assert_width "$(( $(window_width "$codex_pane") - restored_side - 1 ))" "$broot_pane" 'teardown did not restore the broot pane width'
+assert_less_than "$(pane_left "$broot_pane")" "$(pane_left "$codex_pane")" 'teardown should restore broot to the left of Codex'
 
 TMUX_PANE="$broot_pane" "$SCRIPT_ROOT/bin/codex-open-in-vim" "$repo_root/one.txt"
 if ! wait_for_socket; then

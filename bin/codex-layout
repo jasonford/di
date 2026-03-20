@@ -32,6 +32,7 @@ pane_live() {
 }
 
 codex_pane="$(tmux_option @codex_pane_id)"
+broot_pane="$(tmux_option @broot_pane_id)"
 nvim_pane="$(tmux_option @codex_nvim_pane_id)"
 
 if ! pane_live "$codex_pane"; then
@@ -51,9 +52,13 @@ case "$layout_name" in
       printf 'missing nvim pane in session %s\n' "$session_name" >&2
       exit 1
     fi
+    if ! pane_live "$broot_pane"; then
+      printf 'missing broot pane in session %s\n' "$session_name" >&2
+      exit 1
+    fi
     side_width="$(( (window_width - 2) / 3 ))"
+    tmux resize-pane -t "$broot_pane" -x "$side_width" >/dev/null 2>&1 || true
     tmux resize-pane -t "$codex_pane" -x "$side_width" >/dev/null 2>&1 || true
-    tmux resize-pane -t "$nvim_pane" -x "$side_width" >/dev/null 2>&1 || true
     ;;
   *)
     usage
